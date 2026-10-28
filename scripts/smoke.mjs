@@ -466,6 +466,30 @@ check(
   '.npmrc'
 );
 
+// -------------------------------------------------------------- web assets --
+// The SCIF voice mask runs in an AudioWorklet, and production serves the console
+// under `script-src 'self'`. It used to be assembled as a Blob at runtime, which
+// that policy refuses — so the mask never engaged while every call path around
+// it looked correct. It is a file on this origin now, and this keeps it one.
+const worklet = await fetch(base + '/scif-mask-worklet.js');
+const workletSource = await worklet.text();
+check(
+  'the voice mask is a worklet module served from this origin',
+  worklet.status === 200 &&
+    /javascript/.test(worklet.headers.get('content-type') || '') &&
+    /registerProcessor\('scif-mask'/.test(workletSource),
+  { status: worklet.status, type: worklet.headers.get('content-type') }
+);
+// The policy itself is only sent in production; when it is, it must permit the
+// module above and nothing looser.
+const shell = await fetch(base + '/', { headers: { accept: 'text/html' } });
+const csp = shell.headers.get('content-security-policy') || '';
+check(
+  'the console policy allows same-origin scripts, not blob scripts',
+  !csp || (/script-src 'self'/.test(csp) && !/script-src[^;]*blob:/.test(csp)),
+  csp || 'no policy in this mode'
+);
+
 // ------------------------------------------------------------------ public --
 const health = await call('GET', '/api/healthz');
 check('health endpoint', health.status === 200 && health.body.ok === true, health.body);
