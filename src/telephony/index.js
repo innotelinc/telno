@@ -12,6 +12,11 @@ const channels = new Map();
 // call — the leg map is what lets a CDR that arrives after its hangup land on
 // the row the hangup opened, even though only one of them names the call.
 const legs = new Map();
+// A CDR can arrive without a Uniqueid — an older cdr_manager.conf, or a leg the
+// switch never announced before it went away — but it always names the channel
+// it came from. That channel is the same string the Newchannel event carried, so
+// the record can be resolved exactly instead of guessed from a time window.
+const channelKeys = new Map();
 // MixMonitor reports its file when recording starts and stops; the call row is
 // stamped with it so the console can play the audio back after the hangup.
 const recordings = new Map();
@@ -42,7 +47,20 @@ function track(uniqueid, patch) {
  * replayed CDR or a second leg cannot add a row to the log.
  */
 function mergeCall(callId, patch) {
-  const existing = db_.get('SELECT * FROM calls WHERE call_id = ?', [callId]);
+  let key = callId;
+  let existing = db_.get('SELECT * FROM calls WHERE call_id = ?', [key]);
+
+  if (!existing) {
+    // A record can arrive before the leg that made it was ever announced, and
+    // then the only identity it had was a made-up key. Now that the leg has a
+    // name, that row takes it instead of a second row being opened beside it.
+    const placeholder = placeholderKeyFor(patch);
+    if (placeholder) {
+      db_.run('UPDATE calls SET call_id = ? WHERE call_id = ?', [key, placeholder]);
+      existing = db_.get('SELECT * FROM calls WHERE call_id = ?', [key]);
+    }
+  }
+
   const fields = mergeFields(existing || {}, patch);
 
   if (!existing) {
@@ -54,7 +72,7 @@ function mergeCall(callId, patch) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
-        callId,
+        key,
         fields.direction,
         fields.from_number,
         fields.to_number,
@@ -76,15 +94,29 @@ function mergeCall(callId, patch) {
 
   const sets = [];
   const values = [];
-  for (const [key, value] of Object.entries(fields)) {
-    if (value === existing[key]) continue;
-    sets.push(`${key} = ?`);
+  for (const [name, value] of Object.entries(fields)) {
+    if (value === existing[name]) continue;
+    sets.push(`${name} = ?`);
     values.push(value);
   }
   if (sets.length) {
-    db_.run(`UPDATE calls SET ${sets.join(', ')} WHERE call_id = ?`, [...values, callId]);
+    db_.run(`UPDATE calls SET ${sets.join(', ')} WHERE call_id = ?`, [...values, key]);
   }
   return existing.id;
+}
+
+/**
+ * The key a nameless record invented: `<source>-<start time>`.
+ *
+ * Only a row wearing one of these is re-keyed to the leg that claims it. A row
+ * under a real switch identity is a different call, and merging into it would
+ * lose one of the two.
+ */
+const PLACEHOLDER_KEY = /^[^-]+-\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+function placeholderKeyFor(patch) {
+  const candidate = existingCallFor(mergeFields({}, patch));
+  return candidate && PLACEHOLDER_KEY.test(candidate) ? candidate : '';
 }
 
 function rememberLeg(leg, key) {
@@ -93,12 +125,28 @@ function rememberLeg(leg, key) {
   if (legs.size > 2000) legs.delete(legs.keys().next().value);
 }
 
+/** Remember which call a channel belongs to, so a nameless CDR can be placed. */
+function rememberChannel(channel, key) {
+  if (!channel || !key) return;
+  channelKeys.set(channel, key);
+  if (channelKeys.size > 2000) channelKeys.delete(channelKeys.keys().next().value);
+}
+
+/**
+ * The leg's own id.
+ *
+ * Channel events spell it `Uniqueid`; cdr_manager spells it `UniqueID`. Reading
+ * only the first left every record nameless, which is why a call could open a
+ * row of its own after the hangups had already written the call down.
+ */
+const legId = (msg) => String(msg.Uniqueid || msg.UniqueID || '').trim();
+
 /**
  * The call a leg belongs to: its Linkedid when the switch sends one, the leg's
  * own recorded root after that, and its Uniqueid as the last resort.
  */
 function callKey(msg) {
-  const leg = String(msg.Uniqueid || '').trim();
+  const leg = legId(msg);
   const linked = String(msg.Linkedid || '').trim();
   const shared = linked && linked !== '(none)' ? linked : '';
   const key = shared || legs.get(leg) || leg;
@@ -154,13 +202,15 @@ export function ingestEvent(msg) {
     }
     switch (msg.Event) {
       case 'Newchannel': {
+        const call = callKey(msg);
+        rememberChannel(msg.Channel, call);
         track(msg.Uniqueid, {
           from: msg.CallerIDNum || 'unknown',
           to: msg.Exten || '',
           context: msg.Context || '',
           channel: msg.Channel || '',
           started: Date.now(),
-          call: callKey(msg),
+          call,
         });
         break;
       }
@@ -184,7 +234,11 @@ export function ingestEvent(msg) {
         const duration = Math.max(0, Math.round((endedAt - (info.started || endedAt)) / 1000));
         const billsec = info.answered ? Math.max(0, Math.round((endedAt - info.answered) / 1000)) : 0;
         const context = msg.Context || info.context;
-        mergeCall(callKey(msg), {
+        const call = callKey(msg);
+        // The channel outlives the leg in the CDR that follows, so remember it
+        // here as well: the record can arrive before or after this event.
+        rememberChannel(msg.Channel || info.channel, call);
+        mergeCall(call, {
           direction: directionFor(context),
           from_number: info.from,
           to_number: info.dialed || info.to,
@@ -227,15 +281,22 @@ export function ingestEvent(msg) {
           cost: Number(msg.Cost) || 0,
           // Undefined, not empty: a CDR arriving after the Hangup must not wipe
           // the recording the MixMonitor event already attached.
-          recording: recordings.get(msg.Uniqueid) || undefined,
+          recording: recordings.get(legId(msg)) || undefined,
         };
         // The record names its leg only when the switch logs Uniqueid, and even
         // then only after the leg was heard from. Either way the call it belongs
-        // to may already have a row, and that row is the one to write into.
-        let key = callKey(msg);
-        if (!key || !db_.get('SELECT 1 AS hit FROM calls WHERE call_id = ?', [key])) {
-          key = existingCallFor(patch) || key || `${msg.Source || 'unknown'}-${msg.StartTime || now()}`;
-        }
+        // to may already have a row, and that row is the one to write into — in
+        // particular the CDR may arrive *before* the hangup that opens the row,
+        // so the leg's own key is used even when nothing is stored under it yet.
+        const legKey = callKey(msg);
+        const known = [legKey, channelKeys.get(msg.Channel), channelKeys.get(msg.DestinationChannel)].filter(Boolean);
+        const existing = known.find((candidate) =>
+          db_.get('SELECT 1 AS hit FROM calls WHERE call_id = ?', [candidate])
+        );
+        const key = existing
+          || existingCallFor(patch)
+          || known[0]
+          || `${msg.Source || 'unknown'}-${msg.StartTime || now()}`;
         mergeCall(key, patch);
         break;
       }
