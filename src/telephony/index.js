@@ -4,7 +4,7 @@ import { db_, newId, now } from '../db/index.js';
 import { config } from '../config.js';
 import { logEvent } from '../lib/audit.js';
 import { onFaxEvent } from '../lib/fax.js';
-import { asteriskTime, directionFor, DISPOSITIONS, mergeFields } from './call-log.js';
+import { asteriskTime, directionFor, DISPOSITIONS, mergeFields, realDestination } from './call-log.js';
 
 const channels = new Map();
 // Every leg of one call carries the same Linkedid: the Local channel wrapper,
@@ -242,7 +242,9 @@ export function ingestEvent(msg) {
           direction: directionFor(context),
           from_number: info.from,
           to_number: info.dialed || info.to,
-          extension: context === 'internal' ? info.to : '',
+          // The line a call was made on, when the switch names a number here: a
+          // Local channel reports `s`, which is a dialplan label, not a line.
+          extension: context === 'internal' ? realDestination(info.to) : '',
           trunk: (info.channel.match(/trunk-([A-Za-z0-9_.-]+)-/)?.[1] || ''),
           started_at: new Date(info.started || endedAt).toISOString(),
           answered_at: answered,

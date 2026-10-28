@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, existsSync, chmodSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, chmodSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -845,7 +845,18 @@ export function writeConfigs() {
   const tls = ensureTlsMaterial();
   const files = generateConfigs();
   for (const [name, content] of Object.entries(files)) {
-    writeFileSync(join(config.telephony.configDir, name), content, 'utf8');
+    const path = join(config.telephony.configDir, name);
+    try {
+      writeFileSync(path, content, 'utf8');
+    } catch (err) {
+      // A file left behind by another user — a config copied in by hand, or a
+      // volume written by an image that ran as root — cannot be opened for
+      // writing, but the directory itself is ours, so replacing the entry works.
+      // Without this the whole platform refuses to boot over one stale file.
+      if (err.code !== 'EACCES' && err.code !== 'EPERM') throw err;
+      rmSync(path, { force: true });
+      writeFileSync(path, content, 'utf8');
+    }
   }
   return {
     written: true,
