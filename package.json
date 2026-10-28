@@ -17,6 +17,7 @@
     "build": "vite build --config web/vite.config.js",
     "seed": "node src/seed.js",
     "smoke": "node scripts/smoke.mjs",
+    "repair:calls": "node scripts/repair-calls.mjs",
     "inspect": "node scripts/cdp-inspect.mjs"
   },
   "dependencies": {
