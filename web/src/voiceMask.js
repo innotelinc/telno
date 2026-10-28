@@ -80,3 +80,56 @@ export async function createVoiceMask(track, mode = 'off') {
     },
   };
 }
+
+/**
+ * Record a sentence through the selected mask and play it back.
+ *
+ * A preview records instead of monitoring live on purpose: a live loopback of
+ * your own microphone into your own speakers is one open window away from
+ * howling, and what an operator is judging here is the disguise, not the sound
+ * of their own voice arriving late. The sample is played through an audio
+ * element on a `blob:` URL, which the console's `media-src` already allows.
+ *
+ * `onPhase('recording')` fires before the microphone opens for capture and
+ * `onPhase('playing')` before playback, so the caller can label the wait
+ * honestly rather than showing one spinner for both halves.
+ */
+export async function previewMaskedVoice(mode, { seconds = 5, onPhase = () => {} } = {}) {
+  if (mode === 'off') throw new Error('Pick a mask before previewing it');
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot reach a microphone');
+  if (typeof window.MediaRecorder !== 'function') throw new Error('This browser cannot record audio');
+
+  const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+  let mask = null;
+  let url = '';
+  onPhase('recording');
+  try {
+    mask = await createVoiceMask(mic.getAudioTracks()[0], mode);
+    const recorder = new MediaRecorder(new MediaStream([mask.track]));
+    const chunks = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) chunks.push(event.data);
+    };
+    const finished = new Promise((resolve) => {
+      recorder.onstop = resolve;
+    });
+    recorder.start();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(1, seconds) * 1000));
+    recorder.stop();
+    await finished;
+    if (!chunks.length) throw new Error('Nothing was recorded — check the microphone is not muted');
+
+    url = URL.createObjectURL(new Blob(chunks, { type: chunks[0].type || 'audio/webm' }));
+    onPhase('playing');
+    const audio = new Audio(url);
+    await new Promise((resolve, reject) => {
+      audio.onended = resolve;
+      audio.onerror = () => reject(new Error('The sample could not be played back'));
+      audio.play().catch(reject);
+    });
+  } finally {
+    if (mask) await mask.stop().catch(() => {});
+    mic.getTracks().forEach((entry) => entry.stop());
+    if (url) URL.revokeObjectURL(url);
+  }
+}

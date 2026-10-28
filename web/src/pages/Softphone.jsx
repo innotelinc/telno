@@ -3,7 +3,7 @@ import { api, prettyNumber } from '../api.js';
 import { Badge, Button, Card, Empty, Icon, Input, Loading, PageHeader, Select, Stat, Switch, useToast } from '../ui.jsx';
 import { isSoftphoneWindow, openSoftphoneWindow } from '../softphoneWindow.js';
 import { readLine, saveLine } from '../softphoneLine.js';
-import { MASK_MODES, createVoiceMask } from '../voiceMask.js';
+import { MASK_MODES, createVoiceMask, previewMaskedVoice } from '../voiceMask.js';
 import VoicePanel from '../VoicePanel.jsx';
 import { digitsFromSpeech, recognitionSupported, startDictation } from '../speech.js';
 import { watchCalls } from '../native.js';
@@ -160,6 +160,10 @@ export default function Softphone() {
     maskText: false,
   }));
   const [scifSaving, setScifSaving] = useState(false);
+  // Hearing the mask before a call. Whoever is about to spend an hour sounding
+  // like someone else should get one sentence to decide whether that is the
+  // someone else they meant.
+  const [maskPreview, setMaskPreview] = useState({ phase: 'idle', left: 0 });
   // Face ID. The lock is read synchronously because the line registers on
   // mount: a lock that arrived a render later would have already let the
   // registration through. Both the state and the ref, because connect() reads
@@ -181,6 +185,9 @@ export default function Softphone() {
   // The mask graph currently in the outbound audio path, and the original track
   // it replaced so "off" can put the real microphone back.
   const maskRef = useRef(null);
+  // One preview at a time: a second press while the first is recording would
+  // open a second microphone capture and play two samples over each other.
+  const previewingRef = useRef(false);
   const armedRef = useRef(new URLSearchParams(window.location.search).get('scif') === '1');
   const cameraTrackRef = useRef(null);
   const constraintsRef = useRef({ audio: true, video: false });
@@ -1057,6 +1064,33 @@ export default function Softphone() {
     }
   };
 
+  // A preview is five seconds of speech, then the same five seconds back through
+  // the mask. It is off during a call on purpose: the microphone would be
+  // capturing the operator mid-conversation and playing it into the room.
+  const previewMask = async () => {
+    if (previewingRef.current) return;
+    const seconds = 5;
+    previewingRef.current = true;
+    setMaskPreview({ phase: 'recording', left: seconds });
+    const countdown = setInterval(() => {
+      setMaskPreview((current) =>
+        current.phase === 'recording' ? { ...current, left: Math.max(0, current.left - 1) } : current
+      );
+    }, 1000);
+    try {
+      await previewMaskedVoice(scif.voiceMask, {
+        seconds,
+        onPhase: (phase) => setMaskPreview({ phase, left: 0 }),
+      });
+    } catch (err) {
+      toast.error('Could not preview the mask', err.message);
+    } finally {
+      clearInterval(countdown);
+      setMaskPreview({ phase: 'idle', left: 0 });
+      previewingRef.current = false;
+    }
+  };
+
   // Put the mask into the outbound audio path, or take it out. The sender's own
   // track is kept, so "off" restores the real microphone exactly rather than a
   // second-hand copy of it.
@@ -1510,6 +1544,33 @@ export default function Softphone() {
                     </option>
                   ))}
                 </Select>
+              </div>
+              <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="mic"
+                  loading={maskPreview.phase !== 'idle'}
+                  disabled={!scif.enabled || scifSaving || inCall || scif.voiceMask === 'off'}
+                  onClick={previewMask}
+                >
+                  {maskPreview.phase === 'recording'
+                    ? `Listening… ${maskPreview.left}s`
+                    : maskPreview.phase === 'playing'
+                      ? 'Playing back…'
+                      : 'Hear it'}
+                </Button>
+                <span className="tiny dim">
+                  {maskPreview.phase === 'recording'
+                    ? 'Say a sentence — it plays back masked.'
+                    : maskPreview.phase === 'playing'
+                      ? 'This is what the far end hears.'
+                      : inCall
+                        ? 'Available between calls.'
+                        : scif.voiceMask === 'off'
+                          ? 'Pick a mask to preview it.'
+                          : 'Five seconds in, five seconds back, before you dial.'}
+                </span>
               </div>
               {scif.callerId?.mode === 'custom' ? (
                 <Input
