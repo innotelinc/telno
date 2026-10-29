@@ -854,6 +854,10 @@ td .muted {
   border-left-color: var(--err);
 }
 
+.toast.warn {
+  border-left-color: var(--warn);
+}
+
 .toast .close {
   background: none;
   border: none;

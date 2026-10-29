@@ -1,8 +1,19 @@
 import https from 'node:https';
 import type { IncomingHttpHeaders } from 'node:http';
+import { extensionProblem, normalizeExtension } from '@telno/shared';
+import {
+  AUTH_BACKOFF,
+  AUTH_COOLDOWN_MS,
+  credentialKey,
+  formatWait,
+  memoryGuard,
+  type RefusalGuard,
+} from './ht802.js';
 import {
   emptyOverview,
   type AtaAccount,
+  type AtaAccountState,
+  type AtaAccountWrite,
   type AtaOverview,
   type AtaPort,
   type AtaTarget,
@@ -29,19 +40,64 @@ import {
  *    then admits it could not read.
  */
 
-const DEFAULT_FIELDS = [
+/**
+ * Where the SIP identity actually lives on this firmware.
+ *
+ * The console's own pages are the source: `json/contents/dect_acct_settings.js`
+ * (fetched from the unit, not guessed) lists the columns of the account table as
+ * SIP_USER, SIP_AUTH, SIP_PASS, SIP_NAME, SIP_PROFILE — and every cell is either
+ * a `P` number or a dotted name. Reading both settled which one is writable:
+ *
+ *   P4060 … P4069   SIP user id      the value the unit registers as
+ *   P4090 … P4099   authenticate id
+ *   P4120 … P4129   authenticate password (reads back in clear text)
+ *   P4180 … P4189   display name
+ *   P4921 … P4930   registration state   1 = registered, 2 = not registered
+ *
+ * The dotted form (`account.1.sip.user_id`) is a projection of the same rows:
+ * it reads back correctly, and a write to it answers `{"status":"right"}` while
+ * changing nothing. That is the trap this map exists to avoid — the platform
+ * spent a while writing names that the firmware silently ignored.
+ *
+ * Account 1 is the unit's first line, and on a two-port unit that is the first
+ * port; the same index runs across all five blocks, which is why the tables
+ * start at 4060/4090/4120/4180/4921 rather than at round numbers.
+ */
+export const ACCOUNT_SLOTS = 10;
+export const ACCOUNT_BLOCK = { user: 4060, authId: 4090, secret: 4120, name: 4180 } as const;
+export const ACCOUNT_STATUS = 4921;
+
+const STATUS_TEXT: Readonly<Record<string, string>> = {
+  '1': 'registered',
+  '2': 'not registered',
+};
+
+/** `P4060` for account 1, `P4061` for account 2, … */
+export const accountSlot = (block: number, index: number): string => `P${block + index}`;
+
+const IDENTITY_FIELDS = [
   'P68', // software version
-  'P271', // FXS 1 account active
-  'P401', // FXS 2 account active
-  'P35', // FXS 1 SIP user id
-  'P735', // FXS 2 SIP user id
-  'P47', // FXS 1 SIP server
-  'P747', // FXS 2 SIP server
-  'P40', // FXS 1 local SIP port
-  'P740', // FXS 2 local SIP port
   'P199', // uptime, as the unit reports it (` 02:29:04 up 27 days`)
   'serial_number',
+  'phone_model', // the unit's own model name; see `overview()`
 ];
+
+const PROFILE_FIELDS = [1, 2, 3, 4].map((n) => `profile.${n}.sip.server.1.address`);
+
+/** Every field the adaptor view needs, in one round trip. */
+export const accountFields = (): string[] => {
+  const names: string[] = [...IDENTITY_FIELDS, ...PROFILE_FIELDS];
+  for (let i = 0; i < ACCOUNT_SLOTS; i += 1) {
+    names.push(accountSlot(ACCOUNT_BLOCK.user, i), accountSlot(ACCOUNT_BLOCK.authId, i), accountSlot(ACCOUNT_BLOCK.name, i));
+    names.push(`account.${i + 1}.sip.profile_id`, `P${ACCOUNT_STATUS + i}`);
+  }
+  // The password is never read: the API answers it in clear text, and nothing
+  // in this view needs it.
+  return names;
+};
+
+/** Named parameters read at idle speed; kept as a list so callers can extend it. */
+const DEFAULT_FIELDS = accountFields();
 
 export class AtaV2Error extends Error {
   override readonly name = 'AtaV2Error';
@@ -52,6 +108,71 @@ export class AtaV2Error extends Error {
     this.code = code;
   }
 }
+
+/**
+ * What a refused password costs on this firmware.
+ *
+ * The TLS console counts login attempts — it reports them as `wrongN` — but
+ * unlike the V1 it has no readable lockout timer: once it decides to stop
+ * answering, nothing on the box says for how long. So the only defence is not
+ * to knock, which matters more here than on the V1 because this is the firmware
+ * the platform writes to: opening the device sheet probes, the write path signs
+ * in again, and each of those spends an attempt. Without this memory a stale
+ * `TELNO_ATA_PASSWORD` would lock a customer's unit out of its own console just
+ * by being looked at.
+ */
+export interface RefusalVerdict {
+  /** Seconds left before another attempt may be sent; 0 when no attempt may ever be sent. */
+  remainSec: number;
+  invalidAttempts: number;
+  /** Not a cooldown: enough has been refused that no further attempt may be made. */
+  stop: boolean;
+}
+
+/** Null means "safe to try". */
+export function refusalVerdict(
+  guard: RefusalGuard,
+  label: string,
+  key: string,
+): RefusalVerdict | null {
+  const refusal = guard.get(label);
+  if (!refusal) return null;
+  if (refusal.key && refusal.key !== key) {
+    // Someone corrected the deployment: that earns one attempt, and the refusal
+    // recorded against the old password must not block it.
+    guard.clear(label);
+    return null;
+  }
+  if (refusal.count > AUTH_BACKOFF.length) {
+    return { remainSec: 0, invalidAttempts: refusal.count, stop: true };
+  }
+  const window = AUTH_BACKOFF[refusal.count - 1] ?? AUTH_COOLDOWN_MS;
+  const left = window - (Date.now() - refusal.at);
+  if (left <= 0) return null;
+  return { remainSec: Math.ceil(left / 1000), invalidAttempts: refusal.count, stop: false };
+}
+
+/** Remember a refusal, with the `wrongN` the unit answered if it said. */
+export function recordRefusal(
+  guard: RefusalGuard,
+  label: string,
+  key: string,
+  remainingAttempts?: number,
+): void {
+  const previous = guard.get(label);
+  const previousCount = previous && previous.key === key ? previous.count : 0;
+  // Two attempts left belong to a human: spending them locks the hardware for a
+  // timer this firmware will not disclose.
+  const exhausted = typeof remainingAttempts === 'number' && remainingAttempts <= 2;
+  guard.set(label, {
+    at: Date.now(),
+    count: exhausted ? AUTH_BACKOFF.length + 1 : previousCount + 1,
+    key,
+  });
+}
+
+const STOPPED =
+  "This deployment's adaptor password was refused repeatedly, so no further attempts are being made. Correct it and restart the platform.";
 
 interface CallOptions {
   host: string;
@@ -124,6 +245,16 @@ export interface AtaV2Options {
   username?: string;
   password?: string;
   timeoutMs?: number;
+  /** Durable store for refused passwords; the server passes a database-backed one. */
+  guard?: RefusalGuard;
+}
+
+export interface AtaAccountInput {
+  account: number;
+  user?: string;
+  authId?: string;
+  secret?: string;
+  name?: string;
 }
 
 export class AtaV2 {
@@ -132,15 +263,24 @@ export class AtaV2 {
   readonly username: string;
   readonly password: string;
   readonly timeoutMs: number;
+  private readonly guard: RefusalGuard;
   private cookie = '';
   private sid = '';
 
-  constructor({ host, port = 443, username = 'admin', password = '', timeoutMs = 6000 }: AtaV2Options) {
+  constructor({
+    host,
+    port = 443,
+    username = 'admin',
+    password = '',
+    timeoutMs = 6000,
+    guard = memoryGuard,
+  }: AtaV2Options) {
     this.host = host;
     this.port = Number(port) || 443;
     this.username = username || 'admin';
     this.password = password || '';
     this.timeoutMs = timeoutMs;
+    this.guard = guard;
   }
 
   get label(): string {
@@ -180,25 +320,52 @@ export class AtaV2 {
   }
 
   async login(): Promise<{ ok: true; role: string | null; defaultAuth: boolean }> {
-    if (!this.password) throw new AtaV2Error('No admin password is configured for this device', 'ata_auth');
+    // A missing credential is a deployment state, not a refusal: it must not be
+    // counted against the unit's attempt budget or overwrite the digest that
+    // identifies the password actually refused.
+    if (!this.password) {
+      throw new AtaV2Error('No admin password is configured for this device', 'ata_unconfigured');
+    }
+
+    // Refusals are checked before a socket is opened. The unit counts every
+    // attempt, this firmware will not say when it gives up, and a console that is
+    // merely being looked at must not be able to lock the hardware out.
+    const key = credentialKey(this.password);
+    const verdict = refusalVerdict(this.guard, this.label, key);
+    if (verdict) {
+      if (verdict.stop) throw new AtaV2Error(STOPPED, 'ata_locked');
+      throw new AtaV2Error(
+        `The device refused this deployment's password and is counting failed attempts; it will be tried again in ${formatWait(verdict.remainSec)}.`,
+        'ata_auth',
+      );
+    }
+
     const body = `username=${encodeURIComponent(this.username)}&password=${encodeURIComponent(this.password)}`;
     const res = await this.#post('/cgi-bin/dologin', body);
     const payload = res.json;
     const payloadBody = (payload?.body ?? null) as { sid?: unknown; role?: unknown; defaultAuth?: unknown } | null;
     if (payload?.response === 'success' && payloadBody?.sid) {
       this.sid = String(payloadBody.sid);
+      // A working credential clears the memory, so a repaired deployment starts
+      // from zero attempts rather than from the last refusal's timer.
+      this.guard.clear(this.label);
       return {
         ok: true,
         role: payloadBody.role === undefined ? null : String(payloadBody.role),
         defaultAuth: Boolean(payloadBody.defaultAuth),
       };
     }
+
     // `wrongN` carries the attempts left, which is the one number worth passing on.
     const detail = typeof payload?.body === 'string' ? payload.body : '';
     const left = /^wrong(\d+)$/i.exec(detail)?.[1];
+    const remaining = left === undefined ? undefined : Number(left);
+    recordRefusal(this.guard, this.label, key, remaining);
+    const budgetGone = typeof remaining === 'number' && remaining <= 2;
     throw new AtaV2Error(
       left
-        ? `The device did not recognise that admin password (${left} attempt${left === '1' ? '' : 's'} left before a lockout)`
+        ? `The device did not recognise that admin password (${left} attempt${left === '1' ? '' : 's'} left before a lockout)` +
+          (budgetGone ? '. No further attempts will be made until the credential is corrected.' : '')
         : 'The device did not open a session for that password',
       'ata_auth',
     );
@@ -236,6 +403,32 @@ export class AtaV2 {
     const view = emptyOverview(this.target(), 'v2');
     view.sources = { api: 'values.get' };
 
+    // Honour the refusal memory before opening a socket. Reporting the cooldown
+    // is also the only way the console's lockout callout can ever appear for this
+    // firmware: the unit will not say how long its own ban lasts.
+    if (this.password) {
+      const verdict = refusalVerdict(this.guard, this.label, credentialKey(this.password));
+      if (verdict) {
+        view.reachable = true;
+        view.state = 'auth';
+        view.locked = verdict.remainSec > 0;
+        view.remainSec = verdict.remainSec;
+        view.lock = {
+          locked: view.locked,
+          remainSec: verdict.remainSec,
+          accessAttempts: 0,
+          invalidAttempts: verdict.invalidAttempts,
+        };
+        view.notes.push(
+          verdict.stop
+            ? STOPPED
+            : `The platform will not send another password yet: an earlier one was refused and this unit counts every attempt. It will try again in ${formatWait(verdict.remainSec)}.`,
+        );
+        view.tookMs = Date.now() - started;
+        return view;
+      }
+    }
+
     try {
       await this.login();
       view.reachable = true;
@@ -243,7 +436,10 @@ export class AtaV2 {
     } catch (err: unknown) {
       const code = err instanceof AtaV2Error ? err.code : '';
       view.reachable = code !== 'ata_unreachable';
-      view.state = code === 'ata_auth' ? 'auth' : 'unreachable';
+      // A refused, exhausted or unconfigured credential is all "we could not get
+      // in", which is the operator's problem to fix — not an unreachable box.
+      view.state =
+        code === 'ata_auth' || code === 'ata_locked' || code === 'ata_unconfigured' ? 'auth' : 'unreachable';
       view.notes.push(err instanceof Error ? err.message : 'the device did not answer');
       view.tookMs = Date.now() - started;
       return view;
@@ -269,13 +465,15 @@ export class AtaV2 {
       const text = String(raw).trim();
       return text === '' ? null : text;
     };
-    const active = (key: string) => String(values[key] ?? '').trim() === '1';
 
     const uptimeRaw = value('P199');
     const since = uptimeRaw ? /\bup\s+(.+)$/i.exec(uptimeRaw) : null;
 
     view.identity = {
-      model: 'HT802',
+      // Reported, not assumed. This unit answers `DP750` — a DECT base with ten
+      // account slots and no FXS ports at all — and saying "HT802" here made a
+      // whole console read as if it had two analog ports that never existed.
+      model: value('phone_model') ?? 'unknown',
       firmware: value('P68'),
       hardware: null,
       bootloader: null,
@@ -287,40 +485,157 @@ export class AtaV2 {
       ip: this.host,
     };
 
+    const profileServers: Record<string, string> = {};
+    for (const n of [1, 2, 3, 4]) {
+      const address = value(`profile.${n}.sip.server.1.address`);
+      if (address) profileServers[String(n)] = address;
+    }
+
+    // One row per account the unit actually holds. An empty user id is an empty
+    // slot, not a broken port: this box has ten of them and ships with two used.
     const ports: AtaPort[] = [];
     const accounts: AtaAccount[] = [];
-    const map = [
-      { port: 1, on: 'P271', user: 'P35', server: 'P47', local: 'P40' },
-      { port: 2, on: 'P401', user: 'P735', server: 'P747', local: 'P740' },
-    ];
-    for (const entry of map) {
-      const enabled = active(entry.on);
-      const user = value(entry.user);
-      const server = value(entry.server);
+    for (let i = 0; i < ACCOUNT_SLOTS; i += 1) {
+      const user = value(accountSlot(ACCOUNT_BLOCK.user, i));
+      if (!user) continue;
+      const authId = value(accountSlot(ACCOUNT_BLOCK.authId, i));
+      const name = value(accountSlot(ACCOUNT_BLOCK.name, i));
+      const code = value(`P${ACCOUNT_STATUS + i}`);
+      const profileId = value(`account.${i + 1}.sip.profile_id`);
+      const registered = code === '1';
+      const registration = (code ? STATUS_TEXT[code] : null) ?? 'not registered';
       ports.push({
-        port: entry.port,
-        enabled,
+        port: i + 1,
+        enabled: true,
         hook: null,
-        // The API exposes configuration, not live registration: saying
-        // "registered" here would be inventing a fact.
-        registration: user ? (enabled ? 'configured' : 'disabled') : 'no SIP user',
+        // This firmware *does* report registration, per account, so the console
+        // can finally say "registered" instead of "configured".
+        registration,
+        registered,
         sipUser: user,
       });
-      if (user || server) {
-        accounts.push({
-          port: entry.port,
-          user,
-          server,
-          localPort: value(entry.local),
-          active: enabled ? '1' : '0',
-          name: null,
-        });
-      }
+      accounts.push({
+        port: i + 1,
+        user,
+        authId,
+        name,
+        // `profile_id` is zero-based here: 0 is profile 1.
+        server: profileId === null ? null : (profileServers[String(Number(profileId) + 1)] ?? null),
+        profileId: profileId === null ? null : String(Number(profileId) + 1),
+        localPort: null,
+        // What the old table called "active": the account is in service when it
+        // is registered, which is the only meaning an operator cares about.
+        active: registered ? '1' : '0',
+        registered,
+        registration,
+      });
     }
     view.ports = ports;
     view.accounts = accounts;
     view.tookMs = Date.now() - started;
     return view;
+  }
+
+  /**
+   * Write one account row, then read it back.
+   *
+   * Only the `P` numbers in `ACCOUNT_BLOCK` are written. The dotted names are
+   * accepted by `api.values.post` — it answers `{"status":"right"}` — and do
+   * nothing at all, so a caller that "succeeded" against them leaves a line that
+   * still registers as whatever was there before. The read-back is the contract:
+   * a write is only reported as applied when the unit returns the new value.
+   *
+   * The password is written but never read back or returned.
+   */
+  async setAccount({ account, user, authId, secret, name }: AtaAccountInput): Promise<AtaAccountWrite> {
+    const index = Number(account) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= ACCOUNT_SLOTS) {
+      throw new AtaV2Error(`Account must be 1–${ACCOUNT_SLOTS}`, 'ata_account');
+    }
+    // Same rule the console and the lines page use. Refused here, before the
+    // socket, because this firmware stores whatever it is handed and then fails
+    // to register it: `20l` would look like a network fault from then on.
+    const id = normalizeExtension(user);
+    if (!id) {
+      throw new AtaV2Error(
+        extensionProblem(user) ?? 'A SIP user id is required: it is what the line registers as',
+        'ata_account',
+      );
+    }
+
+    if (!this.sid) await this.login();
+
+    // Read the slot before touching it, with the session that is about to
+    // overwrite it. An audit entry that cannot say what it replaced is a
+    // notification, not a record — and this is the one write that can silently
+    // retire a working line.
+    const before = await this.accountState(index);
+
+    const fields: Array<[string, string]> = [
+      [accountSlot(ACCOUNT_BLOCK.user, index), id],
+      [accountSlot(ACCOUNT_BLOCK.authId, index), String(authId ?? id).trim() || id],
+    ];
+    if (name !== undefined && name !== null) fields.push([accountSlot(ACCOUNT_BLOCK.name, index), String(name)]);
+    if (secret) fields.push([accountSlot(ACCOUNT_BLOCK.secret, index), String(secret)]);
+
+    const form = [...fields.map(([key, val]) => `${key}=${encodeURIComponent(val)}`), `sid=${encodeURIComponent(this.sid)}`].join('&');
+    const res = await this.#post('/cgi-bin/api.values.post', form);
+    if (res.json?.response !== 'success') {
+      throw new AtaV2Error(`The device refused the account write (${String(res.json?.body ?? res.status)})`, 'ata_account');
+    }
+
+    // A write is acknowledged before it is applied, so give the config a moment
+    // and then read the numbers back rather than trusting the acknowledgement.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const after = await this.accountState(index);
+
+    const wantedAuth = String(authId ?? id).trim() || id;
+    const applied = after !== null && after.user === id && after.authId === wantedAuth;
+    return {
+      account: index + 1,
+      applied,
+      user: after?.user ?? null,
+      authId: after?.authId ?? null,
+      name: after?.name ?? null,
+      registration: after?.registration ?? 'not reported',
+      previous: before,
+      note: applied
+        ? 'The unit holds the new identity. It re-registers on its own; no reboot is needed.'
+        : after === null
+          ? 'The device acknowledged the write but would not read it back, so it is not being reported as applied.'
+          : 'The device acknowledged the write but did not store it. Its configuration is likely locked by provisioning.',
+    };
+  }
+
+  /**
+   * What one account slot holds, as the unit answers right now.
+   *
+   * The identity fields are requested alongside the account keys on purpose:
+   * `values()` uses them as the canary for a stale session, which answers
+   * `success` with blanks. Without them an empty slot and a dead session are
+   * indistinguishable, and the audit would record "empty" for a line it never
+   * managed to read.
+   */
+  private async accountState(index: number): Promise<AtaAccountState | null> {
+    const { values, stale } = await this.values([
+      ...IDENTITY_FIELDS,
+      accountSlot(ACCOUNT_BLOCK.user, index),
+      accountSlot(ACCOUNT_BLOCK.authId, index),
+      accountSlot(ACCOUNT_BLOCK.name, index),
+      `P${ACCOUNT_STATUS + index}`,
+    ]);
+    if (stale) return null;
+    const read = (key: string): string | null => {
+      const text = String(values[key] ?? '').trim();
+      return text === '' ? null : text;
+    };
+    const code = read(`P${ACCOUNT_STATUS + index}`);
+    return {
+      user: read(accountSlot(ACCOUNT_BLOCK.user, index)),
+      authId: read(accountSlot(ACCOUNT_BLOCK.authId, index)),
+      name: read(accountSlot(ACCOUNT_BLOCK.name, index)),
+      registration: (code ? STATUS_TEXT[code] : null) ?? 'not registered',
+    };
   }
 
   /** Reboot is not wired for this firmware: it lives behind an unverified console operation. */

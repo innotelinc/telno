@@ -264,8 +264,18 @@ export interface AdaptorPort {
   port: number;
   enabled: boolean | null;
   hook: string | null;
-  /** Configuration state as the device reports it, never a claim of registration. */
+  /**
+   * State as the device reports it. The V1 console shows configuration only, so
+   * its value is "configured"; the V2 API reports live registration per account
+   * and says "registered" or "not registered".
+   */
   registration: string | null;
+  /**
+   * True only when the firmware itself reports a live registration. Absent or
+   * null on a V1, where registration is not observable at all — never inferred
+   * from a configured user id.
+   */
+  registered?: boolean | null;
   sipUser: string | null;
 }
 
@@ -273,9 +283,53 @@ export interface AdaptorAccount {
   port: number;
   server: string | null;
   user: string | null;
+  /** Authenticate id, when the firmware reports it separately from the user id. */
+  authId?: string | null;
   name: string | null;
   active: string | null;
   localPort: string | null;
+  /** SIP profile index the line is bound to, one-based. */
+  profileId?: string | null;
+  registration?: string | null;
+  registered?: boolean | null;
+}
+
+/** The SIP identity one line holds, as the unit reports it. */
+export interface AdaptorAccountState {
+  user: string | null;
+  authId: string | null;
+  name: string | null;
+  registration: string;
+}
+
+/** What a write to one line reports: what the unit holds now, not what was asked for. */
+export interface AdaptorAccountWrite {
+  account: number;
+  applied: boolean;
+  user: string | null;
+  authId: string | null;
+  name: string | null;
+  registration: string;
+  /**
+   * What the line held before the write, read with the same session that
+   * replaced it. Null when the unit would not say — which is not the same as an
+   * empty slot, and must not be recorded as one.
+   */
+  previous: AdaptorAccountState | null;
+  note: string;
+}
+
+/**
+ * What the write route answers with: the driver's report, plus the one thing
+ * only the platform can know — whether any line in the estate answers to the
+ * extension that was just written.
+ *
+ * A warning, not an error. The unit will register the identity either way; the
+ * warning exists because it will then ring nowhere, and "registered" on the
+ * device sheet is otherwise indistinguishable from working.
+ */
+export interface AdaptorWriteResponse extends AdaptorAccountWrite {
+  warning: string | null;
 }
 
 export interface AdaptorNetwork {
@@ -373,4 +427,40 @@ export interface Overview {
   cantus: CantusStatus;
   modelMix: Array<{ model: ModelKey; count: number }>;
   events: PlatformEvent[];
+}
+
+/**
+ * What a line identity may look like.
+ *
+ * This is deliberately one rule in one place. The platform is what a Telno line
+ * is, not the adaptor: when a number reaches a box, the firmware accepts
+ * whatever it is given and simply fails to register, so a typo like `20l` shows
+ * up as a silent "not registered" badge with no reason attached. Checking here
+ * keeps the lines page, the adaptor sheet and any future provisioning path from
+ * disagreeing about the same value.
+ *
+ * Two to six digits covers a branch extension (`201`), a short code (`55`) and a
+ * plenty-long-enough site prefix (`123456`). It is not a SIP URI and not a PSTN
+ * number: an external number belongs to a trunk, not to a line.
+ */
+export const EXTENSION_PATTERN = /^\d{2,6}$/;
+
+/** The digits of an extension, or null when the value is not one. */
+export function normalizeExtension(value: unknown): string | null {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  return EXTENSION_PATTERN.test(text) ? text : null;
+}
+
+/**
+ * Why a value cannot be an extension, in words an operator can act on — or null
+ * when it can. Returned rather than thrown so the browser and the server can ask
+ * the same question and show the same sentence.
+ */
+export function extensionProblem(value: unknown): string | null {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  if (!text) return 'An extension is required: it is the SIP user id the line registers as.';
+  if (!EXTENSION_PATTERN.test(text)) {
+    return `"${text}" cannot be a line identity: an extension is 2 to 6 digits, like 201.`;
+  }
+  return null;
 }

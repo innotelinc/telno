@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
-import type { AdaptorOverview, Device, DeviceConfig, Line, ModelKey } from '@telno/shared';
-import { DEVICE_MODELS, MODEL_KEYS } from '@telno/shared';
+import { useMemo, useState, type FormEvent } from 'react';
+import type { AdaptorAccount, AdaptorOverview, Device, DeviceConfig, Line, ModelKey } from '@telno/shared';
+import { DEVICE_MODELS, MODEL_KEYS, extensionProblem } from '@telno/shared';
 import { api } from '../api';
 import {
   Badge,
@@ -619,7 +619,7 @@ function DeviceDetail({
         </div>
       )}
 
-      {device.model === 'ht802' ? <AdaptorPanel device={device} /> : null}
+      {device.model === 'ht802' ? <AdaptorPanel device={device} lines={lines} /> : null}
 
       {showConfig ? (
         config.loading ? (
@@ -657,10 +657,12 @@ const ADAPTOR_STATE: Record<AdaptorOverview['state'], { label: string; tone: 'ok
  * and describes a port as a table cell. This renders what the platform read
  * instead, and is honest about which parts the firmware would not surrender.
  */
-function AdaptorPanel({ device }: { device: Device }) {
+function AdaptorPanel({ device, lines }: { device: Device; lines: Line[] }) {
   const [nonce, setNonce] = useState(0);
   const [confirmReboot, setConfirmReboot] = useState(false);
   const [rebooting, setRebooting] = useState(false);
+  /** Account slot whose editor is open, or null. One at a time keeps the write obvious. */
+  const [editing, setEditing] = useState<number | null>(null);
   const { push } = useToast();
   const adaptor = useAsync<{ adaptor: AdaptorOverview; passwordConfigured: boolean }>(
     () => api.deviceAta(device.id, nonce > 0),
@@ -818,31 +820,243 @@ function AdaptorPanel({ device }: { device: Device }) {
           )}
 
           {view.accounts.length > 0 ? (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>FXS</th>
-                    <th>SIP server</th>
-                    <th>User</th>
-                    <th>Local port</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {view.accounts.map((account) => (
-                    <tr key={account.port}>
-                      <td className="mono">{account.port}</td>
-                      <td className="mono small">{account.server ?? '—'}</td>
-                      <td className="mono small">{account.user ?? '—'}</td>
-                      <td className="mono small">{account.localPort ?? '—'}</td>
+            <div className="stack">
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Line</th>
+                      <th>Telno line</th>
+                      <th>SIP server</th>
+                      <th>User</th>
+                      <th>Local port</th>
+                      <th>Registration</th>
+                      <th />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {view.accounts.map((account) => {
+                      const assigned = platformLineFor(lines, account.port);
+                      return (
+                        <tr key={account.port}>
+                          <td className="mono">{account.port}</td>
+                          <td className="small">
+                            {assigned ? (
+                              <>
+                                <span className="mono">{assigned.extension}</span>{' '}
+                                <span className="muted">{assigned.displayName}</span>
+                              </>
+                            ) : (
+                              <span className="muted">unassigned</span>
+                            )}
+                          </td>
+                          <td className="mono small">{account.server ?? '—'}</td>
+                          <td className="mono small">{account.user ?? '—'}</td>
+                          <td className="mono small">{account.localPort ?? '—'}</td>
+                          <td className="small">
+                            <Registration account={account} />
+                          </td>
+                          <td>
+                            {view.firmware === 'v2' ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                icon="edit"
+                                disabled={!passwordConfigured || !view.reachable}
+                                onClick={() => setEditing(editing === account.port ? null : account.port)}
+                              >
+                                {account.user ? 'Change' : 'Set'} extension
+                              </Button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {view.firmware === 'v2' ? null : (
+                <div className="callout">
+                  <span className="small">
+                    This firmware takes its SIP account as a configuration form, not as an API write, so
+                    extensions are set on the box's own page and only read here.
+                  </span>
+                </div>
+              )}
+
+              {editing !== null && view.firmware === 'v2' ? (
+                <LineEditor
+                  key={editing}
+                  deviceId={device.id}
+                  account={view.accounts.find((a) => a.port === editing) ?? view.accounts[0]!}
+                  platformLine={platformLineFor(lines, editing)}
+                  onDone={(changed) => {
+                    setEditing(null);
+                    // The read-back is the point of the write: re-probe rather than
+                    // redraw the row from what we just asked for.
+                    if (changed) setNonce((n) => n + 1);
+                  }}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>
       ) : null}
     </>
+  );
+}
+
+/** The platform's own line for an adaptor slot, if an installer assigned one. */
+function platformLineFor(lines: Line[], slot: number): Line | null {
+  return lines.find((line) => line.accountSlot === slot) ?? null;
+}
+
+/**
+ * What the firmware says about one line's registration.
+ *
+ * Three states, not two: a unit that cannot report (older firmware) is not a
+ * unit whose line is down, and rendering it as "not registered" would send an
+ * operator chasing hardware that is fine.
+ */
+function Registration({ account }: { account: AdaptorAccount }) {
+  if (account.registered === true) {
+    return (
+      <Badge tone="ok" dot>
+        {account.registration ?? 'registered'}
+      </Badge>
+    );
+  }
+  if (account.registered === false) {
+    return (
+      <Badge tone="warn" dot>
+        {account.registration ?? 'not registered'}
+      </Badge>
+    );
+  }
+  return <span className="muted">not reported</span>;
+}
+
+/**
+ * Write one line's SIP identity to the box.
+ *
+ * The write is verified on the device side and only reports `applied` when the
+ * values read back, so this shows what the box holds afterwards rather than
+ * echoing the form back as success.
+ */
+function LineEditor({
+  deviceId,
+  account,
+  platformLine,
+  onDone,
+}: {
+  deviceId: string;
+  account: AdaptorAccount;
+  platformLine: Line | null;
+  onDone: (changed: boolean) => void;
+}) {
+  const { push } = useToast();
+  const [extension, setExtension] = useState(platformLine?.extension ?? account.user ?? '');
+  const [authId, setAuthId] = useState('');
+  const [name, setName] = useState(platformLine?.displayName ?? account.name ?? '');
+  const [secret, setSecret] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const ext = extension.trim();
+    // The same rule the server applies, so the operator is told before a write is
+    // attempted rather than after the box has accepted a number it cannot ring.
+    const problem = extensionProblem(ext);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await api.setAtaAccount(deviceId, {
+        account: account.port,
+        extension: ext,
+        authId: authId.trim() || undefined,
+        name: name.trim() || undefined,
+        secret: secret || undefined,
+      });
+      push(
+        result.applied
+          ? `Line ${result.account} now holds ${result.user} and reads back ${result.registration}.`
+          : `The box acknowledged the write but still reads back ${result.user ?? 'an empty user'} — ${result.note}`,
+        result.applied ? 'ok' : 'err',
+      );
+      // Registered is not the same as ringing: the unit will hold an identity the
+      // estate has no line for, and say nothing about it.
+      if (result.warning) push(result.warning, 'warn');
+      onDone(result.applied);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The adaptor did not accept the write');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const drift =
+    platformLine && account.user && platformLine.extension !== account.user
+      ? `The platform has ${platformLine.extension} on this slot and the box holds ${account.user}.`
+      : null;
+
+  return (
+    <form className="callout" onSubmit={submit}>
+      <strong>
+        Line {account.port} — {account.user ? 'change the extension' : 'put an extension on this line'}
+      </strong>
+      {drift ? <span className="small">{drift}</span> : null}
+      <div className="grid cols-2">
+        <Field label="Extension" help="The SIP user id the line registers as.">
+          <input
+            className="mono"
+            value={extension}
+            onChange={(event) => setExtension(event.target.value)}
+            placeholder="201"
+            inputMode="numeric"
+            pattern="[0-9]{2,6}"
+            autoFocus
+            required
+          />
+        </Field>
+        <Field label="Auth id" help="Defaults to the extension; only differs when the box authenticates as another name.">
+          <input
+            className="mono"
+            value={authId}
+            onChange={(event) => setAuthId(event.target.value)}
+            placeholder={extension.trim() || 'same as extension'}
+          />
+        </Field>
+        <Field label="Display name" help="Shown on the box's own console and used as caller ID.">
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Reception" />
+        </Field>
+        <Field
+          label="SIP password"
+          help="Written to the box; never returned, echoed or logged. Leave blank to keep the current one."
+        >
+          <input
+            type="password"
+            value={secret}
+            onChange={(event) => setSecret(event.target.value)}
+            autoComplete="new-password"
+            placeholder="unchanged"
+          />
+        </Field>
+      </div>
+      {error ? <ErrorBox message={error} /> : null}
+      <div className="row">
+        <Button size="sm" icon="check" loading={saving} type="submit">
+          Write to line {account.port}
+        </Button>
+        <Button size="sm" variant="ghost" type="button" onClick={() => onDone(false)}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }

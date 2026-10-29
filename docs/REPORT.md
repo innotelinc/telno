@@ -125,9 +125,11 @@ verification (`signatureMatches: true`).
 
 ## 6. Open questions
 
-1. **Device firmware.** T750/HT802 firmware is not in this repository and no device was
-   contacted. The provisioning document defines what a device must consume; implementing the
-   client on the hardware is separate, unstarted work.
+1. **Device firmware.** T750/HT802 firmware is not in this repository. The provisioning
+   document defines what a device must consume; implementing the client on the hardware is
+   separate, unstarted work. An analog adaptor has since been reached on the LAN and its
+   writable account block measured — see [adaptor-account-map.md](adaptor-account-map.md) — but
+   that is the adaptor's own console, not the T750 firmware.
 2. **The old platform's data.** The `:80` service was unreachable before any inventory could be
    read (E6), so no devices, lines or directory entries were imported. The console starts from a
    demo seed and can be reset by deleting the database.

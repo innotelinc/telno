@@ -65,7 +65,7 @@ export function Icon({ name, size = 16 }: { name: keyof typeof ICONS | string; s
 interface Toast {
   id: number;
   message: string;
-  tone: 'ok' | 'err' | 'info';
+  tone: 'ok' | 'err' | 'warn' | 'info';
 }
 
 const ToastContext = createContext<{ push: (message: string, tone?: Toast['tone']) => void }>({
@@ -81,7 +81,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((current) => [...current.slice(-3), { id, message, tone }]);
     window.setTimeout(() => {
       setToasts((current) => current.filter((t) => t.id !== id));
-    }, tone === 'err' ? 7000 : 4200);
+    }, tone === 'err' ? 7000 : tone === 'warn' ? 6500 : 4200);
   }, []);
 
   const value = useMemo(() => ({ push }), [push]);

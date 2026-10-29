@@ -110,9 +110,9 @@ export const ATA_PAGES = [
  * re-sent until the cooldown passes — a console that is being looked at cannot
  * lock the hardware it is reporting on.
  */
-const AUTH_COOLDOWN_MS = 5 * 60 * 1000;
+export const AUTH_COOLDOWN_MS = 5 * 60 * 1000;
 /** Each further refusal waits longer, and the third stops the attempts entirely. */
-const AUTH_BACKOFF = [5 * 60 * 1000, 15 * 60 * 1000] as const;
+export const AUTH_BACKOFF = [5 * 60 * 1000, 15 * 60 * 1000] as const;
 
 /**
  * Where refused passwords are remembered.

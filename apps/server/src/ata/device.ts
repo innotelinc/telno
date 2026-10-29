@@ -1,6 +1,6 @@
 import { Ht802, memoryGuard, type RefusalGuard } from './ht802.js';
-import { AtaV2 } from './v2.js';
-import type { AtaFirmware, AtaOverview } from './types.js';
+import { AtaV2, type AtaAccountInput } from './v2.js';
+import type { AtaAccountWrite, AtaFirmware, AtaOverview } from './types.js';
 
 /**
  * One adaptor, whichever firmware is actually installed.
@@ -77,6 +77,10 @@ export class AtaDevice {
         // Detection is a hint, not the read: a dead box must not cost two full
         // timeouts before the console can say it is unreachable.
         timeoutMs: Math.min(this.timeoutMs, 2500),
+        // Same refusal memory as the V1. This firmware is the one the platform
+        // writes to, so a stale password here would spend an attempt on every
+        // probe and every write — and its lock timer cannot be read back.
+        guard: this.guard,
       });
       let isV2 = false;
       try {
@@ -121,6 +125,21 @@ export class AtaDevice {
       );
     }
     return impl.page(id);
+  }
+
+  /**
+   * Set the SIP identity of one line.
+   *
+   * Only the TLS firmware exposes a writable account block. The mini_httpd units
+   * take their settings as a configuration form post that this client has not
+   * measured, so this refuses rather than pretending to have written them.
+   */
+  async setAccount(input: AtaAccountInput): Promise<AtaAccountWrite> {
+    const impl = await this.detect();
+    if (impl instanceof AtaV2) return impl.setAccount(input);
+    throw new AtaUnsupported(
+      'This firmware takes its SIP account as a configuration form, not as an API write. Use its own page.',
+    );
   }
 
   async reboot(): Promise<{ status: number; accepted: boolean }> {

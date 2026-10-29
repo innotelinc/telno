@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { DeviceConfig, ModelKey, RoutingMode } from '@telno/shared';
-import { DEVICE_MODELS, isModelKey } from '@telno/shared';
+import { DEVICE_MODELS, extensionProblem, isModelKey, normalizeExtension } from '@telno/shared';
 import { AtaUnsupported } from './ata/device.js';
 import { env } from './env.js';
-import { forgetAdaptor, probeAdaptor, rebootAdaptor } from './ata/probe.js';
+import { forgetAdaptor, probeAdaptor, rebootAdaptor, setAdaptorAccount } from './ata/probe.js';
+import { lineAssignment } from './estate.js';
 import {
   db,
   hashPassword,
@@ -371,9 +372,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/lines', async (req, reply) => {
     if (!requireSession(req, reply)) return;
     const body = (req.body ?? {}) as Body;
-    const extension = str(body.extension).trim();
+    const problem = extensionProblem(body.extension);
+    if (problem) return bad(reply, problem);
+    const extension = normalizeExtension(body.extension) ?? str(body.extension).trim();
     const displayName = str(body.displayName).trim();
-    if (!/^\d{2,6}$/.test(extension)) return bad(reply, 'extension must be 2-6 digits');
     if (!displayName) return bad(reply, 'display name is required');
 
     const mode = str(body.routingMode, 'business-hours') as RoutingMode;
@@ -945,6 +947,104 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const query = req.query as { refresh?: string };
     const view = await probeAdaptor(target, { refresh: query.refresh === '1' });
     return { adaptor: view, passwordConfigured: Boolean(env.ataPassword) };
+  });
+
+  /*
+   * Put an extension on one of the unit's lines, or replace the one it holds.
+   *
+   * This is the write the console could not do before: the account fields it was
+   * aiming at (`account.1.sip.user_id`) are read-only projections, so every write
+   * was acknowledged and dropped. The driver now writes the parameters the unit
+   * actually registers from and reports what it read back — never just that the
+   * device said `right`.
+   *
+   * The secret is taken from the request and written to the box; it is never
+   * echoed, logged or stored by the platform.
+   */
+  app.post('/api/devices/:id/ata/accounts', async (req, reply) => {
+    if (!requireSession(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const target = adaptorTarget(id, reply);
+    if (!target) return null;
+    if (!env.ataPassword) {
+      return bad(
+        reply,
+        'TELNO_ATA_PASSWORD is not configured, so the platform cannot sign in to set this line.',
+        409,
+      );
+    }
+
+    const body = (req.body ?? {}) as Body;
+    const account = Number(body.account ?? 1);
+    // The unit takes any string and then quietly fails to register it, so a typo
+    // is refused here, before a login attempt is spent proving it. A console
+    // form may send the number as a number; shared's rule accepts both.
+    const raw = body.extension ?? body.user;
+    const user = normalizeExtension(raw);
+    if (!user) {
+      return bad(reply, extensionProblem(raw) ?? 'an extension is required', 400);
+    }
+
+    // The box reports a line as registered whether or not the extension is this
+    // port's to use, so the estate is asked before the write and the operator is
+    // told afterwards. Deliberately not a refusal: an operator may be ahead of
+    // the line inventory, and the hardware already holds numbers the platform
+    // learned about later. A slot that is not a number would match nothing and
+    // invent a warning, so it is only asked when it means something; the driver
+    // owns the upper bound, because firmware knows how many slots it has.
+    const assignment =
+      Number.isInteger(account) && account >= 1
+        ? lineAssignment(db, { extension: user, deviceId: id, slot: account })
+        : { warning: null, owner: null };
+    const warning = assignment.warning;
+
+    try {
+      const result = await setAdaptorAccount(target, {
+        account,
+        user,
+        authId: str(body.authId) || undefined,
+        secret: str(body.secret) || undefined,
+        name: typeof body.name === 'string' ? body.name : undefined,
+      });
+      // The ledger has to survive being asked "what was on that line before?" —
+      // overwriting a live identity is exactly the mistake this will be read for
+      // afterwards, and "was set to 202" alone cannot answer it.
+      const was = result.previous;
+      const summary =
+        was === null
+          ? `was set to ${user} (the line could not be read beforehand)`
+          : was.user === result.user
+            ? `was rewritten as ${user}, unchanged,`
+            : `was changed from ${was.user ?? 'an empty slot'} to ${user}`;
+      recordEvent(
+        'device',
+        result.applied && !warning ? 'info' : 'warn',
+        `Adaptor line ${result.account} at ${target.host} ${summary} and read back as ${result.user ?? 'empty'}.${warning ? ` ${warning}` : ''}`,
+        {
+          deviceId: id,
+          account: result.account,
+          from: was?.user ?? null,
+          fromAuthId: was?.authId ?? null,
+          fromName: was?.name ?? null,
+          fromRegistration: was?.registration ?? null,
+          readableBefore: was !== null,
+          unknownExtension: assignment.owner === null,
+          assignedTo: assignment.owner,
+          to: result.user,
+        },
+      );
+      return { ...result, warning };
+    } catch (err: unknown) {
+      if (err instanceof AtaUnsupported) return bad(reply, err.message, 409);
+      forgetAdaptor(target.host);
+      // A refused, cooled-down or unconfigured credential is a state the operator
+      // has to resolve; retrying cannot. Answering 502 would read as an outage.
+      const code = (err as { code?: unknown }).code;
+      if (code === 'ata_auth' || code === 'ata_locked' || code === 'ata_unconfigured') {
+        return bad(reply, err instanceof Error ? err.message : 'the adaptor refused the write', 409);
+      }
+      return bad(reply, err instanceof Error ? err.message : 'the adaptor did not accept the write', 502);
+    }
   });
 
   app.post('/api/devices/:id/ata/reboot', async (req, reply) => {
