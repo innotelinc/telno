@@ -1,0 +1,79 @@
+# Telno — run the published image.
+#
+# This is the file the installer writes for a visitor who has no source: `docker
+# compose up -d` pulls `innotel/telno:latest` and brings up the switch, the API
+# and the console. It is deliberately short. The full file in the repository
+# passes ~80 variables through from a `.env`; every one of those has a default in
+# the application, so this file only names the ones a fresh install actually needs
+# to be told.
+#
+#   curl -fsSL https://telno.services/install.sh | sh
+#
+# Building from source is the repository's own docker-compose.yml, which needs the
+# checkout; this file never does.
+
+name: telno
+
+services:
+  telno:
+    image: ${TELNO_IMAGE:-innotel/telno:latest}
+    container_name: telno
+    restart: unless-stopped
+
+    # A readable hostname on purpose: Docker's default is a hex container id, and
+    # a SIP parser reads a digit-leading host as a broken IPv4 address.
+    hostname: ${TELNO_HOSTNAME:-telno}
+
+    # Host networking puts the web port, SIP, RTP media and AMI on the host's own
+    # stack, so a reverse proxy reaches the app over a plain socket and no SDP
+    # address has to be rewritten on the way through Docker's NAT.
+    #
+    # On Docker Desktop for Mac or Windows host networking is limited: comment out
+    # network_mode and publish the ports instead.
+    #   ports:
+    #     - "${TELNO_PORT:-8080}:8080"
+    #     - "${SOFTPHONE_PORT:-8089}:8089"
+    #     - "10000-10100:10000-10100/udp"
+    network_mode: host
+
+    environment:
+      # The address a browser uses. A real hostname needs TLS in front of it:
+      # session cookies are marked secure, so a production boot refuses an http
+      # public URL on a real hostname unless ALLOW_INSECURE_PUBLIC_URL is set.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@telno.local}
+      # Leave empty and the first boot generates one, written to the data volume.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DEFAULT_COUNTRY: ${DEFAULT_COUNTRY:-US}
+      # TURN is optional: without it calls still work on ordinary NATs.
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_SECRET: ${TURN_SECRET:-}
+      ALLOW_INSECURE_PUBLIC_URL: ${ALLOW_INSECURE_PUBLIC_URL:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
+
+    # The image runs unprivileged (uid 999). A volume written by a root-running
+    # image needs one chown, and the entrypoint prints that command rather than
+    # failing obscurely.
+    volumes:
+      - telno-data:/data                 # database, secrets, recordings, backups
+      - telno-asterisk:/etc/asterisk     # generated switch configuration
+      - telno-spool:/var/spool/asterisk  # voicemail
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+volumes:
+  telno-data:
+  telno-asterisk:
+  telno-spool:

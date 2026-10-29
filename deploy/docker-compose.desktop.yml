@@ -1,0 +1,56 @@
+# Telno — the variant for Docker Desktop (macOS and Windows).
+#
+# Docker Desktop does not put a container on the host's network stack the way
+# Linux does, so this file publishes the ports instead of asking for host
+# networking: web/API, the softphone's secure WebSocket, and the RTP media range.
+# On Linux use docker-compose.yml, which uses host networking and needs no port
+# mapping — the installer picks the right one.
+#
+#   curl -fsSL https://telno.services/install.sh | sh
+
+name: telno
+
+services:
+  telno:
+    image: ${TELNO_IMAGE:-innotel/telno:latest}
+    container_name: telno
+    restart: unless-stopped
+    hostname: ${TELNO_HOSTNAME:-telno}
+
+    ports:
+      - "${TELNO_PORT:-8080}:8080"       # console, API and public directory
+      - "${SOFTPHONE_PORT:-8089}:8089"   # SIP over secure WebSocket
+      - "10000-10100:10000-10100/udp"    # RTP media
+
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@telno.local}
+      # Leave empty and the first boot generates one, written to the data volume.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DEFAULT_COUNTRY: ${DEFAULT_COUNTRY:-US}
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_SECRET: ${TURN_SECRET:-}
+      ALLOW_INSECURE_PUBLIC_URL: ${ALLOW_INSECURE_PUBLIC_URL:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
+      # The switch advertises this address to callers. On Desktop the container
+      # cannot see the host's LAN address, so this is what a handset or browser
+      # elsewhere is told to send media to — set it when calling from another
+      # machine.
+      ASTERISK_EXTERNAL_ADDRESS: ${ASTERISK_EXTERNAL_ADDRESS:-}
+
+    volumes:
+      - telno-data:/data
+      - telno-asterisk:/etc/asterisk
+      - telno-spool:/var/spool/asterisk
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+volumes:
+  telno-data:
+  telno-asterisk:
+  telno-spool:

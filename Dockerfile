@@ -25,6 +25,7 @@ COPY web ./web
 # `npm run build` stages web/landing into the build output, so the marketing page
 # ships in this image and the app serves it at /landing.
 COPY scripts/build-landing.mjs ./scripts/
+COPY deploy ./deploy
 RUN npm run build
 
 # --------------------------------------------------------------- switch -----

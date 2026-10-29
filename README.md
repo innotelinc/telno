@@ -59,6 +59,31 @@ number table and one design system.
 | Slimmer platform + API | Node 24 + SQLite (`node:sqlite`, no native modules) + static UI — no SSR runtime, no ORM, no Redis |
 | Worldwide phonebook | `telno.directory`, `num.directory`, `number.directory`, `directory.telno.services`, `directory.pbx.services`, `directory.pbx.technology` |
 
+## Install from the published build
+
+A machine without this checkout installs the same platform in one command:
+
+```bash
+curl -fsSL https://telno.services/install.sh | sh
+```
+
+The installer picks the compose file for the host — host networking on Linux, published
+ports on Docker Desktop — fetches [`deploy/env.example`](deploy/env.example) as `.env`, loads
+the release archive from `https://telno.services/download/telno-<version>.tar.gz`, and starts
+the container. It pulls from a registry only when `TELNO_IMAGE` is set: a public registry can
+rate-limit a push, and an install path should not depend on someone else's quota.
+
+Producing that archive is one command against a built image:
+
+```bash
+docker save innotel/telno:1.0.0 innotel/telno:latest | gzip -1 > telno-1.0.0.tar.gz
+```
+
+It belongs in `$DATA_DIR/releases/` on the host that serves the installer; the app serves
+that directory at `/download/` with range support, so a resumed download works and the
+archive stays out of the image. [`deploy/`](deploy) holds both compose files and the
+installer, and `npm run build` stages all of them into the build output.
+
 ## Quick start
 
 ```bash

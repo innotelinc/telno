@@ -178,6 +178,24 @@ export async function buildApp(opts = {}) {
     // with index.html — the browser then refuses it as a bad MIME type.
     await app.register(fastifyStatic, { root: dist, wildcard: true, index: ['index.html'] });
 
+    // The release image, for the installer the quickstart curls. A registry is
+    // the better home for it and the installer prefers one when TELNO_IMAGE is
+    // set, but a public registry can rate-limit the push — and an install path
+    // that depends on somebody else's quota is not an install path. Releases
+    // live on the data volume, outside the image (which would otherwise contain
+    // a copy of itself), and are served with range support so a download
+    // resume works.
+    const releases = join(config.dataDir, 'releases');
+    if (existsSync(releases)) {
+      await app.register(fastifyStatic, {
+        root: releases,
+        prefix: '/download/',
+        decorateReply: false,
+        index: false,
+        list: false,
+      });
+    }
+
     app.setNotFoundHandler((request, reply) => {
       if (request.url.startsWith('/api/')) {
         return reply.status(404).send({ error: { code: 'not_found', message: 'Unknown endpoint' } });

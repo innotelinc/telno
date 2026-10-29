@@ -533,6 +533,42 @@ check(
   { status: themeCss.status, type: themeCss.headers.get('content-type') }
 );
 
+// The quickstart tells a visitor to run one command, so the files that command
+// needs have to be served here — and the compose it fetches has to run a
+// published image, never a build context. A visitor has no checkout to build
+// from; that was the whole reason the quickstart stopped working.
+const installer = await fetch(base + '/install.sh');
+const installerText = await installer.text();
+check(
+  'the installer the quickstart curls is served here',
+  installer.status === 200 &&
+    /application\/x-sh/.test(installer.headers.get('content-type') || '') &&
+    /docker compose .*up -d/.test(installerText) &&
+    /docker load/.test(installerText),
+  { status: installer.status, type: installer.headers.get('content-type') }
+);
+const releaseCompose = await fetch(base + '/docker-compose.yml');
+const releaseText = await releaseCompose.text();
+check(
+  'the compose file a visitor runs pulls an image and needs no checkout',
+  releaseCompose.status === 200 &&
+    /^\s+image:\s*\S+/m.test(releaseText) &&
+    !/^\s+build:/m.test(releaseText),
+  { status: releaseCompose.status, build: releaseText.match(/^\s+build:.*$/m)?.[0] || null }
+);
+// The archive the installer downloads is named after the release, and the name it
+// was built with has to be the one this build knows about: a mismatch is an
+// install that fetches a 404 after a version bump nobody finished.
+const packageVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
+const installerVersion = installerText.match(/^VERSION="([^"]*)"$/m)?.[1] || '';
+check(
+  'and it downloads the release archive for this version',
+  installerVersion === packageVersion &&
+    installerText.includes('/download/') &&
+    !installerText.includes('@VERSION@'),
+  { packageVersion, installerVersion }
+);
+
 // ------------------------------------------------------------------ public --
 const health = await call('GET', '/api/healthz');
 check('health endpoint', health.status === 200 && health.body.ok === true, health.body);

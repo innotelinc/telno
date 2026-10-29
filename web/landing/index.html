@@ -380,7 +380,7 @@
       <a class="btn primary" href="#quickstart">Start it in one command</a>
       <a class="btn" href="/subscribe">See the plans</a>
     </div>
-    <pre><code>docker compose up -d --build   <span class="muted"># Asterisk 20 + API + UI, one container, ~200 MB RSS</span></code></pre>
+    <pre><code>curl -fsSL https://telno.services/install.sh | sh   <span class="muted"># pulls the image: switch + API + UI, one container</span></code></pre>
     <div class="stack">
       <span class="pill ok">DTLS-SRTP calling</span>
       <span class="pill info">Worldwide E.164 registry</span>
@@ -609,12 +609,16 @@
       <h2>Quick start<span class="accent">.</span></h2>
       <ol class="steps">
         <li>
-          <strong>Start the container</strong>
-          <code>docker compose up -d --build</code> — the switch, the API and the UI come up together.
+          <strong>Install it</strong>
+          <code>curl -fsSL https://telno.services/install.sh | sh</code> — pulls the published image and
+          starts the switch, the API and the UI together. Docker Engine or Desktop with Compose v2 is
+          the only prerequisite; there is nothing to clone.
         </li>
         <li>
           <strong>Read the owner password</strong>
-          First boot prints it once in <code>docker compose logs telno</code>; nothing is emailed anywhere.
+          First boot writes it to the data volume, never to email. The installer prints the command
+          that reads it — it ends in <code>exec telno cat /data/first-run-password.txt</code>, with
+          whichever compose file it installed.
         </li>
         <li>
           <strong>Sign in</strong>
