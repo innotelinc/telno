@@ -184,9 +184,26 @@ export function labelValuePairs(html: string): LabelValue[] {
     pairs.push({ label: cleanLabel, value: cleanValue });
   };
 
-  // <td>Label</td><td>Value</td>, with any attributes or nested markup.
-  const cells = /<td\b[^>]*>([\s\S]*?)<\/td>\s*<td\b[^>]*>([\s\S]*?)<\/td>/gi;
-  for (const match of html.matchAll(cells)) add(match[1] ?? '', match[2] ?? '');
+  // Row-aware, because these pages put the label and its value in the same
+  // `<tr>` but also carry spacer and header cells: pairing neighbouring `td`s
+  // across the whole document shifted every value after the first wide row and
+  // dropped the MAC row entirely.
+  let sawRow = false;
+  for (const row of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...(row[1] ?? '').matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) => cell[1] ?? '');
+    if (cells.length < 2) continue;
+    sawRow = true;
+    // Every cell is paired with the one after it, not every *other* cell:
+    // these rows carry spacer cells (and headers of three or more columns), so
+    // fixed pairing put a label on the wrong value or dropped it altogether.
+    for (let index = 0; index + 1 < cells.length; index += 1) add(cells[index]!, cells[index + 1]!);
+  }
+
+  // Pages without table rows still mark values up as adjacent cells.
+  if (!sawRow) {
+    const cells = /<td\b[^>]*>([\s\S]*?)<\/td>\s*<td\b[^>]*>([\s\S]*?)<\/td>/gi;
+    for (const match of html.matchAll(cells)) add(match[1] ?? '', match[2] ?? '');
+  }
 
   // <b>Label:</b> value  /  <span>Label</span>: value
   const inline = /<(b|strong|span|label)\b[^>]*>([^<]{2,64}):?\s*<\/\1>\s*[:：]?\s*([^<\n]{1,120})/gi;
@@ -217,6 +234,56 @@ export function formFields(html: string): Record<string, string> {
     fields[name] = selected?.[1] ? decodeEntities(selected[1]) : '';
   }
   return fields;
+}
+
+/**
+ * Links a console page publishes, with their visible text.
+ *
+ * The FXS tabs are emitted from inside `document.write(...)` strings, so the
+ * quotes around the href arrive backslash-escaped; the pattern tolerates that
+ * rather than assuming clean markup.
+ */
+export function extractNav(html: string): Array<{ href: string; label: string }> {
+  const out: Array<{ href: string; label: string }> = [];
+  const re = /<a\b[^>]*?href\s*=\s*\\*["']?([\w#./?=&-]+)\\*["']?[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const m of html.matchAll(re)) {
+    const href = m[1] ?? '';
+    const label = stripTags((m[2] ?? '').replace(/\\/g, '')).trim();
+    if (!href || !label) continue;
+    if (/^(#|javascript:|mailto:)/i.test(href)) continue;
+    if (out.some((entry) => entry.href === href)) continue;
+    out.push({ href, label });
+  }
+  return out;
+}
+
+/**
+ * Value of a named input; for radio groups, the checked option wins.
+ *
+ * These pages are assembled with `document.write`, so attributes arrive with
+ * escaped quotes and — on radio groups — unquoted values (`value=0`). Both
+ * shapes are read here; requiring well-formed markup silently returned nothing.
+ */
+export function inputValue(html: string, name: string): string | null {
+  const literal = (text: string): string => text.replace(/\\/g, '');
+  const attribute = (tag: string, key: string): string | null => {
+    const match = new RegExp(`\\b${key}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
+    if (!match) return null;
+    return literal(match[1] ?? match[2] ?? match[3] ?? '');
+  };
+
+  let checked: string | null = null;
+  let first: string | null = null;
+  for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
+    const tag = match[0];
+    const field = attribute(tag, 'name');
+    if (!field || field.toUpperCase() !== name.toUpperCase()) continue;
+    const value = attribute(tag, 'value') ?? '';
+    if (first === null) first = value;
+    if (/\bchecked\b/i.test(tag)) checked = value;
+  }
+  const chosen = checked ?? first;
+  return chosen === null || chosen.trim() === '' ? null : chosen.trim();
 }
 
 /** First label whose name matches any of the keys, case and punctuation aside. */
@@ -277,6 +344,9 @@ export class Ht802 {
   private readonly transport: Transport;
   private readonly guard: RefusalGuard;
   private cookie = '';
+  /** The console page the login POST returns, and the links it advertises. */
+  private landing = '';
+  private nav: Array<{ href: string; label: string }> = [];
   private sessionPromise: Promise<{ ok: true; reused: boolean }> | null = null;
 
   constructor({
@@ -455,13 +525,33 @@ export class Ht802 {
     if (lock.locked) throw new AtaLockedError(lock.remainSec, lock.invalidAttempts);
 
     const encoded = Buffer.from(this.password, 'utf8').toString('base64');
-    const page = await this.send('GET', '/', { authenticated: false });
-    const gnkey = /\bgnkey\b[^>]*\bvalue\s*=\s*["']?([0-9a-fA-F]+)/i.exec(page.body)?.[1] ?? '';
 
-    let res = await this.send('POST', '/cgi-bin/dologin', {
-      form: { P2: encoded, ...(gnkey ? { gnkey } : {}) },
-      authenticated: false,
-    });
+    /**
+     * Read the login form and send back exactly the fields it declares.
+     *
+     * Firmwares differ here in a way that looks like a wrong password: one page
+     * asks for `P2` + `gnkey` alone, while the 1.0.x console at `/cgi-bin/login`
+     * also requires `username`, the submit button's `Login` value and a
+     * per-page `session_token`. Posting the shorter set is rejected as a bad
+     * password on that firmware, which costs an attempt from the device's five.
+     */
+    let page = await this.send('GET', '/cgi-bin/login', { authenticated: false });
+    if (page.status !== 200) page = await this.send('GET', '/', { authenticated: false });
+    const formHtml = /<form[\s\S]*?<\/form>/i.exec(page.body)?.[0] ?? page.body;
+    const declared = formFields(formHtml);
+    const rawAction = /<form[^>]*\baction\s*=\s*["']?([^"'\s>]+)/i.exec(formHtml)?.[1] ?? 'dologin';
+    const action = rawAction.startsWith('/') ? rawAction : `/cgi-bin/${rawAction}`;
+
+    const form: Record<string, string> = { P2: encoded };
+    // Only fields the page actually offers: an unknown key is a needless risk.
+    if (declared.username !== undefined) form.username = declared.username || this.username;
+    if (declared.Login !== undefined) form.Login = declared.Login || 'Login';
+    for (const key of ['gnkey', 'session_token']) {
+      const value = declared[key];
+      if (value) form[key] = value;
+    }
+
+    let res = await this.send('POST', action, { form, authenticated: false });
     let session = cookiesFrom(res.headers).find((entry) => /^session_id=/i.test(entry));
 
     if (!session) {
@@ -505,12 +595,46 @@ export class Ht802 {
     }
 
     this.cookie = session;
+    // This firmware answers a successful login *with the console page itself*,
+    // so the status data is already in hand and the nav tells us the real page
+    // names (`config2`, `config_a1`…) instead of the ones a firmware revision
+    // list suggests.
+    this.landing = res.body;
+    this.nav = extractNav(res.body);
     this.guard.clear(this.label);
     return { ok: true, reused: false };
   }
 
   logout(): void {
     this.cookie = '';
+    this.landing = '';
+    this.nav = [];
+  }
+
+  /** Links the console advertises, as `href` + visible label. */
+  get links(): Array<{ href: string; label: string }> {
+    return this.nav;
+  }
+
+  /** Open a console page by the href the console itself published. */
+  async open(href: string): Promise<{ status: number; html: string }> {
+    await this.login();
+    const path = href.startsWith('/') ? href : `/cgi-bin/${href.replace(/^\.\//, '')}`;
+    const res = await this.send('GET', path);
+    if (res.status === 301 || res.status === 302) {
+      // This firmware serves one session at a time and answers a stale cookie
+      // with a bare redirect. Sign in once more rather than discarding the
+      // console page the first login already returned.
+      this.cookie = '';
+      await this.login();
+      const retry = await this.send('GET', path);
+      if (retry.status === 301 || retry.status === 302) {
+        this.cookie = '';
+        throw new AtaAuthError(`The device refused the session for ${path}`);
+      }
+      return { status: retry.status, html: retry.body };
+    }
+    return { status: res.status, html: res.body };
   }
 
   /** Fetch a console page, signing in first if that is what it takes. */
@@ -519,8 +643,14 @@ export class Ht802 {
     const res = await this.send('GET', `/cgi-bin/${id}`);
     if (res.status === 301 || res.status === 302) {
       // A redirect is this firmware's only way of saying "no session".
-      this.logout();
-      throw new AtaAuthError(`The device refused the session for /cgi-bin/${id}`);
+      this.cookie = '';
+      await this.login();
+      const retry = await this.send('GET', `/cgi-bin/${id}`);
+      if (retry.status === 301 || retry.status === 302) {
+        this.cookie = '';
+        throw new AtaAuthError(`The device refused the session for /cgi-bin/${id}`);
+      }
+      return { status: retry.status, html: retry.body, headers: retry.headers, junk: retry.junk };
     }
     return { status: res.status, html: res.body, headers: res.headers, junk: res.junk };
   }
@@ -528,6 +658,9 @@ export class Ht802 {
   /** Model, firmware, serial, MAC and uptime, from whichever page carries them. */
   async identify(): Promise<{ identity: AtaIdentity; sources: Record<string, string> }> {
     const sources: Record<string, string> = {};
+    // The login response *is* the status page on this firmware, so the identity
+    // is usually already in hand and no extra request is needed.
+    const landingPairs = this.landing ? labelValuePairs(this.landing) : [];
     const identity: AtaIdentity = {
       model: null,
       firmware: null,
@@ -547,8 +680,18 @@ export class Ht802 {
       ['serial', ['serial number']],
       ['mac', ['mac address']],
       ['uptime', ['system up time', 'up time', 'uptime']],
-      ['ip', ['ip address', 'ip']],
+      ['ip', ['ipv4 address', 'ip address', 'ip']],
     ];
+
+    if (landingPairs.length) {
+      for (const [field, keys] of wanted) {
+        const value = pick(landingPairs, keys);
+        if (value) identity[field] = value;
+      }
+      sources.status = 'ok';
+    }
+    // Only go looking for other pages when the landing page was not enough.
+    if (identity.model && identity.firmware && identity.serial) return { identity, sources };
 
     for (const id of ['information', 'device_info', 'status', 'home']) {
       let page: { html: string };
@@ -636,13 +779,17 @@ export class Ht802 {
     view.identity = identified.identity;
     view.sources = { ...identified.sources };
 
-    const ports = await this.#ports();
-    view.ports = ports.ports;
-    view.sources.ports = ports.source;
-
     const accounts = await this.#accounts();
     view.accounts = accounts.accounts;
     view.sources.accounts = accounts.source;
+
+    // An FXS page states each port's own configuration, so the ports are
+    // derived from it rather than scraped from a table cell somewhere else.
+    const ports = accounts.accounts.length
+      ? this.#portsFromAccounts(accounts.accounts, this.#hooks())
+      : await this.#ports();
+    view.ports = ports.ports;
+    view.sources.ports = ports.source;
 
     view.network = await this.#network();
 
@@ -695,8 +842,72 @@ export class Ht802 {
     return { ports: [], source: 'none' };
   }
 
+  /** Handset state per port, as the status table on the landing page reports it. */
+  #hooks(): Map<number, string> {
+    const hooks = new Map<number, string>();
+    for (const pair of labelValuePairs(this.landing)) {
+      const match = /^fxs\s*(\d+)$/i.exec(pair.label.trim());
+      if (match && /hook|idle|busy|ring/i.test(pair.value)) hooks.set(Number(match[1]), pair.value);
+    }
+    return hooks;
+  }
+
   /** The SIP account per port, as the console would show it on its own page. */
+  /** Ports described by the FXS configuration pages. */
+  #portsFromAccounts(
+    accounts: AtaAccount[],
+    hooks: Map<number, string> = new Map(),
+  ): { ports: AtaPort[]; source: string } {
+    return {
+      source: 'fxs',
+      ports: accounts.map((account) => ({
+        port: account.port,
+        enabled: account.active === null ? null : account.active === '1',
+        // The configuration pages say nothing about the handset, but the status
+        // table on the landing page does, so it is carried over when present.
+        hook: hooks.get(account.port) ?? null,
+        // Configuration, not live registration: the console does not say.
+        registration: account.user
+          ? account.active === '1'
+            ? 'configured'
+            : 'disabled'
+          : 'no SIP user',
+        sipUser: account.user,
+      })),
+    };
+  }
+
   async #accounts(): Promise<{ accounts: AtaAccount[]; source: string }> {
+    // This firmware publishes its FXS tabs and their P-numbers, so read those
+    // pages directly; the table scraping below is only for consoles that don't.
+    const fxs = this.nav.filter((link) => /fxs\s*port/i.test(link.label));
+    if (fxs.length) {
+      const accounts: AtaAccount[] = [];
+      // One page at a time: this firmware keeps a single session, and parallel
+      // reads made it drop one, which then shifted the port numbering below.
+      for (const [index, link] of fxs.entries()) {
+        let html: string;
+        try {
+          html = (await this.open(link.href)).html;
+        } catch {
+          continue;
+        }
+        // The first tab is labelled "FXS PORT" with no digit; the others carry
+        // theirs. The position in the published list is the fallback, so a page
+        // that fails cannot renumber the ones that follow.
+        const number = Number(/fxs\s*port\s*(\d+)/i.exec(link.label)?.[1] ?? index + 1) || index + 1;
+        const server = inputValue(html, `P${number === 1 ? 47 : 747}`);
+        const user = inputValue(html, `P${number === 1 ? 35 : 735}`);
+        const authId = inputValue(html, `P${number === 1 ? 36 : 736}`);
+        const active = inputValue(html, `P${number === 1 ? 271 : 401}`);
+        const localPort = inputValue(html, `P${number === 1 ? 40 : 740}`);
+        // A port with nothing configured is still a port: it is reported with
+        // nulls so the console can say "no SIP user" rather than omit it.
+        accounts.push({ port: number, server, user, name: authId, active, localPort });
+      }
+      if (accounts.length) return { accounts, source: 'fxs' };
+    }
+
     let page: { html: string };
     try {
       page = await this.page('account');

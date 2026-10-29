@@ -135,21 +135,38 @@ An HT802 is not a small desk phone: it is a box with two FXS ports, its own web 
 voice stack that has never heard of cantus. Two firmwares are in the field and they share no
 protocol, so the platform asks the box rather than the installer:
 
-| | V1 (1.0.x) | V2 (1.0.21) |
+| | V1 (1.0.x, incl. 1.0.21.4) | V2 (GWT console) |
 |---|---|---|
 | Console | mini_httpd, server-rendered CGI | lighttpd over TLS, GWT single page |
-| Login | `POST /cgi-bin/dologin` with base64 `P2` + `gnkey` | `username`/`password` form fields, `sid` session |
-| State | `/cgi-bin/api-get_*` | `/cgi-bin/api.values.get` with P-numbers |
+| Login | `POST /cgi-bin/dologin` with base64 `P2`, and on 1.0.21.4 also `username`, `Login` and the per-page `session_token` | `username`/`password` form fields, `sid` session |
+| State | `/cgi-bin/api-get_*`, plus the status page and the per-port `config_a1`/`config_a2` pages | `/cgi-bin/api.values.get` with P-numbers |
 | Trap | writes two status lines and leaks its CGI shebang where a header belongs — `fetch`, curl and undici all reject it | a stale `sid` answers `success` with every value empty |
+
+**Version is not a console family.** The unit at `192.168.1.45` runs Program `1.0.21.4` and is still
+the mini_httpd console, so nothing here infers the family from the version string: the client reads
+whichever login form the box serves and then follows the navigation that box publishes.
 
 That first trap is why [`apps/server/src/ata/raw.ts`](apps/server/src/ata/raw.ts) speaks HTTP over a
 raw socket and parses forgivingly. Nothing is proxied to the device's own page: the platform reads
 the box and renders what it found.
 
-Checked against a live unit on the LAN (`192.168.1.45`, V1 firmware, voice image `16480`): the
-unauthenticated endpoints answer through the raw transport, the unit reports `5` access attempts and
-`0` invalid, and with no password configured the report is `auth` with the note that none is set —
-no attempt is spent learning that.
+Checked against a live unit on the LAN (`192.168.1.45`, Program `1.0.21.4`, serial
+`207GHQYM103ED820`, MAC `C0:74:AD:3E:D8:20`, voice image `16472`): the unauthenticated endpoints
+answer through the raw transport, and with no password configured the report is `reachable` with the
+note that none is set — no attempt is spent learning that.
+
+What that unit reports, and what it will not: the login *response* is the status page, so model,
+firmware, serial, MAC and uptime cost no extra request; each FXS port's account comes from its own
+tab (`config_a1`, `config_a2`) as raw P-values — `P35`/`P735` SIP user, `P47`/`P747` SIP server,
+`P40`/`P740` local port, `P271`/`P401` account active. The status table adds the handset state
+(`On Hook`), but **neither page says whether the registration is up**: the box exposes configuration
+and hook state, not registration, so the panel says `configured` and never invents `registered`.
+That fact has to come from the switch the port is registered to.
+
+The console serves one session at a time and answers a superseded cookie with a bare `301`; a page
+read therefore signs in again once instead of reporting a port that does not exist. Ports are read
+one page at a time for the same reason, and each port's number comes from its tab label rather than
+from its position in a filtered list, so a page that fails cannot renumber the others.
 
 Enrol a unit the usual way; the address it enrols from is recorded as `addr`, which is where the
 console then reaches it (set it by hand on the device if the box was enrolled through a proxy).
