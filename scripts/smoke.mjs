@@ -49,7 +49,7 @@ function check(name, condition, detail = '') {
   return ok;
 }
 
-async function call(path, { method = 'GET', body, headers = {}, auth = true } = {}) {
+async function call(path, { method = 'GET', body, headers = {}, auth = true, origin = base } = {}) {
   const init = { method, headers: { ...headers } };
   if (body !== undefined) {
     init.headers['content-type'] = 'application/json';
@@ -58,7 +58,7 @@ async function call(path, { method = 'GET', body, headers = {}, auth = true } = 
   if (auth && cookie) init.headers.cookie = cookie;
   let res;
   try {
-    res = await fetch(`${base}${path}`, init);
+    res = await fetch(`${origin}${path}`, init);
   } catch (err) {
     const code = err?.cause?.code ?? err?.code ?? '';
     if (!/CERT|ISSUER|SELF_SIGNED/.test(code)) throw err;
@@ -307,6 +307,69 @@ let lineId;
   check('cantus selftest passes', status.json?.selftest?.ok === true);
 }
 
+/* ------------------------------------------- plain-HTTP provisioning listener */
+section('device provisioning listener');
+let provDeviceId = null;
+{
+  // The terminator serves /prov on a second, plain-HTTP port for firmware that
+  // cannot trust a private CA. Same host as the console, different port.
+  const provPort = process.env.PROVISION_PORT ?? fileEnv.PROVISION_PORT ?? '8088';
+  const provOrigin = `http://${new URL(base).hostname}:${provPort}`;
+
+  let live = false;
+  try {
+    // No token: a listener that is up answers 401, a missing one throws.
+    live = (await fetch(`${provOrigin}/prov/v1/config`)).status === 401;
+  } catch {
+    live = false;
+  }
+
+  if (!live) {
+    console.log(`SKIP  no provisioning listener on ${provOrigin} — start it with \`npm run proxy\``);
+  } else {
+    const code = await call('/api/provisioning/codes', {
+      method: 'POST',
+      body: { model: 'ht802', ttlMinutes: 10 },
+    });
+    check('enrollment code issued', code.status === 201, `HTTP ${code.status}`);
+
+    const serial = `SMOKE-HT802-${Date.now().toString().slice(-6)}`;
+    const enrolled = await call('/prov/v1/enroll', {
+      method: 'POST',
+      auth: false,
+      origin: provOrigin,
+      body: { code: code.json?.code, serial },
+    });
+    check('device enrolls over plain HTTP', enrolled.status === 201, `HTTP ${enrolled.status}`);
+    check(
+      'device is pointed at the listener it actually reached',
+      String(enrolled.json?.configUrl ?? '').startsWith(provOrigin),
+      enrolled.json?.configUrl ?? '(no configUrl)',
+    );
+    provDeviceId = enrolled.json?.deviceId ?? null;
+
+    const bearer = { authorization: `Bearer ${enrolled.json?.token ?? ''}` };
+    const first = await call('/prov/v1/config', { auth: false, origin: provOrigin, headers: bearer });
+    const etag = first.headers.get('etag') ?? '';
+    check(
+      'signed config served over plain HTTP',
+      first.status === 200 && Boolean(etag) && Boolean(first.json?.signature),
+      `HTTP ${first.status} etag ${etag}`,
+    );
+    const again = await call('/prov/v1/config', {
+      auth: false,
+      origin: provOrigin,
+      headers: { ...bearer, 'if-none-match': etag },
+    });
+    check('unchanged config answers 304 on the device port', again.status === 304, `HTTP ${again.status}`);
+
+    for (const path of ['/api/overview', '/api/provisioning', '/api/cantus/status']) {
+      const leaked = await call(path, { auth: false, origin: provOrigin });
+      check(`console API closed on the device port (${path})`, leaked.status === 404, `HTTP ${leaked.status}`);
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- settings */
 section('settings and export');
 {
@@ -323,6 +386,10 @@ section('cleanup');
 {
   const removed = await call(`/api/devices/${device.id}`, { method: 'DELETE' });
   check('smoke device removed', removed.status === 200, `HTTP ${removed.status}`);
+  if (provDeviceId) {
+    const provRemoved = await call(`/api/devices/${provDeviceId}`, { method: 'DELETE' });
+    check('provisioning test device removed', provRemoved.status === 200, `HTTP ${provRemoved.status}`);
+  }
   if (lineId) {
     const lineRemoved = await call(`/api/lines/${lineId}`, { method: 'DELETE' });
     check('smoke line removed', lineRemoved.status === 200, `HTTP ${lineRemoved.status}`);

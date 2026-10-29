@@ -5,7 +5,7 @@ The control plane and operator console for the **Telno T750 2026** desk phone an
 first-party signed provisioning, and voice routing through
 [cantus](https://github.com/innotelinc/cantus) — no PBX, no SIP registrar, no SDP.
 
-![stack](https://img.shields.io/badge/voice-cantus%201.0-7c74ff) ![runtime](https://img.shields.io/badge/node-%E2%89%A522.5-3ddc97) ![tests](https://img.shields.io/badge/smoke-38%20checks-7c74ff)
+![stack](https://img.shields.io/badge/voice-cantus%201.0-7c74ff) ![runtime](https://img.shields.io/badge/node-%E2%89%A522.5-3ddc97) ![tests](https://img.shields.io/badge/smoke-47%20checks-7c74ff)
 
 ## What is here
 
@@ -218,7 +218,7 @@ names both, because an edited `.env` that silently stops applying is a trap.
 
 ```bash
 npm test --workspace @telno/server      # 28 unit tests: signing, routing documents, CIDR allowlist
-node scripts/smoke.mjs http://127.0.0.1:8791   # 38 end-to-end checks against the control plane
+node scripts/smoke.mjs http://127.0.0.1:8791   # 47 end-to-end checks against the control plane
 npm run typecheck                       # both workspaces
 
 # the same suite through the TLS terminator, which Node only trusts when told to
@@ -232,7 +232,9 @@ path is covered at the control plane, where the header is trusted only from loop
 The smoke script signs in, adds a device, enrolls it, fetches and re-fetches its config (200 →
 304), reports a revision, rotates the token (old token refused), verifies the signature, creates
 a line, builds and validates the routing document with cantus, runs a route test, confirms an
-untrusted network is refused at both sign-in and the API, updates settings and cleans up.
+untrusted network is refused at both sign-in and the API, and — against the plain-HTTP listener —
+enrolls a second device, proves its config is signed and answers 304 while unchanged, and checks
+that every console API path stays closed on that port. It updates settings and cleans up.
 
 ## Reset
 
