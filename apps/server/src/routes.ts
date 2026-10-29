@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { DeviceConfig, ModelKey, RoutingMode } from '@telno/shared';
-import { DEVICE_MODELS, isModelKey } from '@telno/shared';
+import { DEVICE_MODELS, extensionProblem, isModelKey, normalizeExtension } from '@telno/shared';
 import { AtaUnsupported } from './ata/device.js';
 import { env } from './env.js';
 import { forgetAdaptor, probeAdaptor, rebootAdaptor, setAdaptorAccount } from './ata/probe.js';
@@ -371,9 +371,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/lines', async (req, reply) => {
     if (!requireSession(req, reply)) return;
     const body = (req.body ?? {}) as Body;
-    const extension = str(body.extension).trim();
+    const problem = extensionProblem(body.extension);
+    if (problem) return bad(reply, problem);
+    const extension = normalizeExtension(body.extension) ?? str(body.extension).trim();
     const displayName = str(body.displayName).trim();
-    if (!/^\d{2,6}$/.test(extension)) return bad(reply, 'extension must be 2-6 digits');
     if (!displayName) return bad(reply, 'display name is required');
 
     const mode = str(body.routingMode, 'business-hours') as RoutingMode;
@@ -974,12 +975,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     const body = (req.body ?? {}) as Body;
     const account = Number(body.account ?? 1);
-    // An extension is a digit string, but a console form may well send it as a
-    // number; both mean the same thing here.
+    // The unit takes any string and then quietly fails to register it, so a typo
+    // is refused here, before a login attempt is spent proving it. A console
+    // form may send the number as a number; shared's rule accepts both.
     const raw = body.extension ?? body.user;
-    const user = typeof raw === 'number' ? String(raw) : str(raw).trim();
+    const user = normalizeExtension(raw);
     if (!user) {
-      return bad(reply, 'an extension is required: it is the SIP user id the line registers as', 400);
+      return bad(reply, extensionProblem(raw) ?? 'an extension is required', 400);
     }
 
     try {

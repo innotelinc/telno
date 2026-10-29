@@ -60,6 +60,14 @@ then **reads the values back**. `applied` is true only when `P4060+n` and
 `applied: false` with a reason — never as success. The password is written to the
 box and is never read, returned, logged or stored by the platform.
 
+The identity itself is checked before a socket opens. `@telno/shared` owns the
+rule (`EXTENSION_PATTERN`, two to six digits) and hands back the sentence to
+show, so the console field, the write route and the driver all refuse `20l` with
+"an extension is 2 to 6 digits" instead of storing it and letting the line
+register as nothing. The rule belongs to the platform, not the adaptor: the
+firmware accepts whatever string it is handed, which is precisely why a typo on
+the box is silent.
+
 ## Measured on a real unit
 
 ```

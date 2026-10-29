@@ -1,5 +1,6 @@
 import https from 'node:https';
 import type { IncomingHttpHeaders } from 'node:http';
+import { extensionProblem, normalizeExtension } from '@telno/shared';
 import {
   AUTH_BACKOFF,
   AUTH_COOLDOWN_MS,
@@ -551,8 +552,16 @@ export class AtaV2 {
     if (!Number.isInteger(index) || index < 0 || index >= ACCOUNT_SLOTS) {
       throw new AtaV2Error(`Account must be 1–${ACCOUNT_SLOTS}`, 'ata_account');
     }
-    const id = String(user ?? '').trim();
-    if (!id) throw new AtaV2Error('A SIP user id is required: it is what the line registers as', 'ata_account');
+    // Same rule the console and the lines page use. Refused here, before the
+    // socket, because this firmware stores whatever it is handed and then fails
+    // to register it: `20l` would look like a network fault from then on.
+    const id = normalizeExtension(user);
+    if (!id) {
+      throw new AtaV2Error(
+        extensionProblem(user) ?? 'A SIP user id is required: it is what the line registers as',
+        'ata_account',
+      );
+    }
 
     if (!this.sid) await this.login();
 

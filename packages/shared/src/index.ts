@@ -415,3 +415,39 @@ export interface Overview {
   modelMix: Array<{ model: ModelKey; count: number }>;
   events: PlatformEvent[];
 }
+
+/**
+ * What a line identity may look like.
+ *
+ * This is deliberately one rule in one place. The platform is what a Telno line
+ * is, not the adaptor: when a number reaches a box, the firmware accepts
+ * whatever it is given and simply fails to register, so a typo like `20l` shows
+ * up as a silent "not registered" badge with no reason attached. Checking here
+ * keeps the lines page, the adaptor sheet and any future provisioning path from
+ * disagreeing about the same value.
+ *
+ * Two to six digits covers a branch extension (`201`), a short code (`55`) and a
+ * plenty-long-enough site prefix (`123456`). It is not a SIP URI and not a PSTN
+ * number: an external number belongs to a trunk, not to a line.
+ */
+export const EXTENSION_PATTERN = /^\d{2,6}$/;
+
+/** The digits of an extension, or null when the value is not one. */
+export function normalizeExtension(value: unknown): string | null {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  return EXTENSION_PATTERN.test(text) ? text : null;
+}
+
+/**
+ * Why a value cannot be an extension, in words an operator can act on — or null
+ * when it can. Returned rather than thrown so the browser and the server can ask
+ * the same question and show the same sentence.
+ */
+export function extensionProblem(value: unknown): string | null {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  if (!text) return 'An extension is required: it is the SIP user id the line registers as.';
+  if (!EXTENSION_PATTERN.test(text)) {
+    return `"${text}" cannot be a line identity: an extension is 2 to 6 digits, like 201.`;
+  }
+  return null;
+}

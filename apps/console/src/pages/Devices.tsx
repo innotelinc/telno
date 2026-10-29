@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import type { AdaptorAccount, AdaptorOverview, Device, DeviceConfig, Line, ModelKey } from '@telno/shared';
-import { DEVICE_MODELS, MODEL_KEYS } from '@telno/shared';
+import { DEVICE_MODELS, MODEL_KEYS, extensionProblem } from '@telno/shared';
 import { api } from '../api';
 import {
   Badge,
@@ -966,8 +966,11 @@ function LineEditor({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const ext = extension.trim();
-    if (!ext) {
-      setError('An extension is required — it is the SIP user id the line registers as.');
+    // The same rule the server applies, so the operator is told before a write is
+    // attempted rather than after the box has accepted a number it cannot ring.
+    const problem = extensionProblem(ext);
+    if (problem) {
+      setError(problem);
       return;
     }
     setSaving(true);
@@ -1012,6 +1015,8 @@ function LineEditor({
             value={extension}
             onChange={(event) => setExtension(event.target.value)}
             placeholder="201"
+            inputMode="numeric"
+            pattern="[0-9]{2,6}"
             autoFocus
             required
           />

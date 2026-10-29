@@ -570,7 +570,10 @@ describe('the account block the TLS firmware writes', () => {
 
   it('refuses an empty user id rather than writing a blank identity', async () => {
     const device = new AtaV2({ host: '127.0.0.1', password: 'x' });
-    await expect(device.setAccount({ account: 1, user: '   ' })).rejects.toThrow(/SIP user id is required/);
+    // The message now comes from the shared rule, which says what the field is.
+    await expect(device.setAccount({ account: 1, user: '   ' })).rejects.toThrow(
+      /An extension is required: it is the SIP user id/,
+    );
   });
 });
 
@@ -904,6 +907,38 @@ describe('the account write contract on the TLS firmware', () => {
       expect(fake.writes).toHaveLength(0);
     } finally {
       await shut(fake.server);
+    }
+  });
+});
+/**
+ * The last line of defence before a number reaches a box. The firmware stores
+ * whatever it is given, so a value it cannot register has to be refused by the
+ * platform — and refused before a login attempt is spent, not after.
+ */
+describe('line identities the adaptor driver will not write', () => {
+  it('rejects a value that is not an extension without opening a socket', async () => {
+    // Port 1 is closed: a dial would answer "refused the connection", so a
+    // rejection here can only come from the guard in front of the socket.
+    const device = new AtaV2({ host: '127.0.0.1', port: 1, password: 'x', timeoutMs: 500 });
+    for (const user of ['20l', '1', '1234567', '+201', '']) {
+      await expect(device.setAccount({ account: 1, user })).rejects.toThrow(/2 to 6 digits|required/);
+    }
+    await expect(device.setAccount({ account: 1 })).rejects.toThrow(/required/);
+  });
+
+  it('accepts a short branch extension at the boundary of the rule', async () => {
+    const fake = await fakeV2Ht802();
+    const port = await (async () => {
+      await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));
+      return (fake.server.address() as AddressInfo).port;
+    })();
+    try {
+      const device = new AtaV2({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
+      const result = await device.setAccount({ account: 1, user: '55' });
+      expect(result.applied).toBe(true);
+      expect(result.user).toBe('55');
+    } finally {
+      await new Promise<void>((resolve) => fake.server.close(() => resolve()));
     }
   });
 });
