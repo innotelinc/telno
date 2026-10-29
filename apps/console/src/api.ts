@@ -1,4 +1,5 @@
 import type {
+  AdaptorAccountWrite,
   AdaptorOverview,
   CantusRouteDecision,
   CantusStatus,
@@ -85,6 +86,10 @@ export const api = {
     ),
   rebootAta: (id: string) =>
     post<{ status: number; accepted: boolean }>(`/api/devices/${id}/ata/reboot`),
+  setAtaAccount: (
+    id: string,
+    body: { account: number; extension: string; authId?: string; name?: string; secret?: string },
+  ) => post<AdaptorAccountWrite>(`/api/devices/${id}/ata/accounts`, body),
 
   lines: () => request<{ lines: Line[] }>('/api/lines'),
   createLine: (body: Record<string, unknown>) => post<{ line: Line }>('/api/lines', body),

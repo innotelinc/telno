@@ -80,3 +80,21 @@ customers and are masked here.
   the model the unit reports rather than the model the platform assumed.
 - A user id and a secret are not a registration. The switch has to know the
   account too; the earlier notes asserted the opposite.
+
+## Doing it from the console
+
+The device sheet now carries the write: each line in the adaptor panel has a
+**Set extension** / **Change extension** button, and the form it opens sends the
+same `POST /api/devices/:id/ata/accounts` the API documents. Three details are
+deliberate:
+
+- The **Telno line** column shows which platform line an installer assigned to
+  that slot (`lines.account_slot`), so the box and the platform are read side by
+  side rather than trusted to agree. Opening the editor prefills from the
+  platform and says so when the two disagree.
+- **Registration** is a three-state badge: registered, not registered, or "not
+  reported" for firmware that cannot say. An unknown is never drawn as a fault.
+- The sheet **re-probes the device** after a write instead of redrawing the row
+  from the form, so what appears is the read-back, not the request. On units
+  whose firmware takes an account by form post rather than by API, the button is
+  absent and the panel says why — there is no write path to offer.
