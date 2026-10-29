@@ -4,12 +4,12 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { installAuth } from './plugins/auth.js';
-import { HttpError } from './lib/errors.js';
+import { HttpError, forbidden, paymentRequired } from './lib/errors.js';
 import { registerRoutes } from './routes/index.js';
 import { registerWssRelay } from './telephony/wssRelay.js';
 import { registerProvisioning } from './routes/provisioning.js';
@@ -185,16 +185,44 @@ export async function buildApp(opts = {}) {
     // live on the data volume, outside the image (which would otherwise contain
     // a copy of itself), and are served with range support so a download
     // resume works.
+    // Created at boot rather than left to whoever uploads a release: the gate
+    // has to answer the same way on an install with no archive yet, so an
+    // anonymous request is refused by the gate instead of falling through to a
+    // 404 that depends on what happens to be on the volume.
     const releases = join(config.dataDir, 'releases');
-    if (existsSync(releases)) {
-      await app.register(fastifyStatic, {
-        root: releases,
-        prefix: '/download/',
-        decorateReply: false,
-        index: false,
-        list: false,
-      });
-    }
+    mkdirSync(releases, { recursive: true });
+    // Behind the console, not public. The archive is the application itself —
+    // source included — and the repository it is built from is private, so a URL
+    // anyone could fetch would hand out the backend. A staff session or a key
+    // minted for installs is required, and the check runs before the file is
+    // looked up, so an anonymous request learns nothing about what is there.
+    await app.register(
+      async (scoped) => {
+        scoped.addHook('preHandler', async (request) => {
+          const account = app.readSession(request);
+          if (account) {
+            // Deliberately not the console's onboarding gate: fetching the
+            // installer is how a second machine gets set up, and an operator
+            // halfway through the wizard still needs it. Suspension applies.
+            if (account.suspended_at) {
+              throw paymentRequired('This account is suspended for non-payment');
+            }
+            if ((account.account_kind || 'staff') !== 'staff') {
+              throw forbidden('The release archive is for the operator of this install');
+            }
+            return;
+          }
+          await app.authenticateAny(request, 'install');
+        });
+        await scoped.register(fastifyStatic, {
+          root: releases,
+          decorateReply: false,
+          index: false,
+          list: false,
+        });
+      },
+      { prefix: '/download/' }
+    );
 
     app.setNotFoundHandler((request, reply) => {
       if (request.url.startsWith('/api/')) {
@@ -205,9 +233,11 @@ export async function buildApp(opts = {}) {
       }
       // A stale page asking for an old hashed asset must get a 404, never
       // index.html: the browser rejects the HTML as a module script. Scoped to
-      // /assets/ because /d/<host> paths legitimately end in a TLD.
-      if (request.url.startsWith('/assets/')) {
-        return reply.status(404).send({ error: { code: 'not_found', message: 'Asset not found' } });
+      // /assets/ because /d/<host> paths legitimately end in a TLD. A release
+      // that is not there is the same kind of answer: the installer has to be
+      // told "no archive" rather than handed a page and told to load it.
+      if (request.url.startsWith('/assets/') || request.url.startsWith('/download/')) {
+        return reply.status(404).send({ error: { code: 'not_found', message: 'Not found' } });
       }
       return reply.type('text/html').sendFile('index.html');
     });

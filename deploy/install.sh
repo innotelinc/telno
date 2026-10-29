@@ -1,14 +1,18 @@
 #!/bin/sh
 # Telno — install from the published image.
 #
-#   curl -fsSL https://telno.services/install.sh | sh
+#   TELNO_KEY=<install key> curl -fsSL https://telno.services/install.sh | sh
 #
-# Nothing here needs the source: the image is pulled from the registry, and the
-# two files this writes (docker-compose.yml and .env) are fetched from the same
-# place. Re-run it to upgrade; it will not touch an .env you have edited.
+# The release archive is behind the console — it is the application, source
+# included — so downloading it needs an install key. Create one there:
+# Settings → API keys → scope "install".
+# Nothing here needs the source: the compose file, the .env and the release
+# archive are all fetched from the same host. Re-run it to upgrade; it will not
+# touch an .env you have edited.
 #
 # Overrides, if you are installing from something other than telno.services:
 #   TELNO_URL     where the compose file, release archive and this script are served
+#   TELNO_KEY     an install key from the console, to download the archive
 #   TELNO_IMAGE   pull this image from a registry instead of the release archive
 #   TELNO_DIR     the directory to create (default ./telno)
 #
@@ -29,7 +33,7 @@ for arg in "$@"; do
     --force) FORCE=1 ;;
     --keep-archive) KEEP_ARCHIVE=1 ;;
     -h|--help)
-      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -145,9 +149,19 @@ if [ -n "${TELNO_IMAGE:-}" ]; then
 else
   ARCHIVE="telno-$VERSION.tar.gz"
   ARCHIVE_URL="$BASE/download/$ARCHIVE"
-  if curl -fsI "$ARCHIVE_URL" >/dev/null 2>&1; then
+  # curl with the install key, when there is one. The server refuses the archive
+  # without it, and refuses before it looks for the file, so an unknown key and
+  # a missing archive are told apart here rather than guessed at.
+  with_key() {
+    if [ -n "${TELNO_KEY:-}" ]; then
+      curl -H "x-api-key: $TELNO_KEY" "$@"
+    else
+      curl "$@"
+    fi
+  }
+  if with_key -fsI "$ARCHIVE_URL" >/dev/null 2>&1; then
     say "  Downloading $ARCHIVE — a few hundred megabytes, once."
-    if ! curl -fL --retry 3 -C - "$ARCHIVE_URL" -o "$ARCHIVE"; then
+    if ! with_key -fL --retry 3 -C - "$ARCHIVE_URL" -o "$ARCHIVE"; then
       rm -f "$ARCHIVE"
       fail "Could not download $ARCHIVE from $ARCHIVE_URL"
     fi
@@ -157,6 +171,12 @@ else
     fi
     [ "$KEEP_ARCHIVE" -eq 1 ] || rm -f "$ARCHIVE"
   else
+    CODE=$(with_key -s -o /dev/null -w '%{http_code}' -I "$ARCHIVE_URL" 2>/dev/null || true)
+    case "$CODE" in
+      401|403)
+        fail "The release archive on $BASE needs an install key. Create one in the console — Settings, API keys, scope \"install\" — then run this again with TELNO_KEY=<key> in front of the command."
+        ;;
+    esac
     say "  No release archive at $ARCHIVE_URL; pulling from the registry instead."
     # shellcheck disable=SC2086
     if ! docker compose $COMPOSE_ARGS pull; then

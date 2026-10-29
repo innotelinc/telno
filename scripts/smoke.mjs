@@ -568,6 +568,21 @@ check(
     !installerText.includes('@VERSION@'),
   { packageVersion, installerVersion }
 );
+// The archive is the application, source and all, and the repository is private:
+// it must not be readable by whoever has the URL. 401 before the file is looked
+// for, so an anonymous caller cannot even probe which releases exist.
+const anonymousArchive = await fetch(base + '/download/telno-1.0.0.tar.gz');
+check(
+  'the release archive is not served to an anonymous request',
+  anonymousArchive.status === 401,
+  anonymousArchive.status
+);
+const anonymousMissing = await fetch(base + '/download/does-not-exist.tar.gz');
+check(
+  'and a missing release is refused the same way, not confirmed',
+  anonymousMissing.status === 401,
+  anonymousMissing.status
+);
 
 // ------------------------------------------------------------------ public --
 const health = await call('GET', '/api/healthz');
@@ -2581,6 +2596,48 @@ const keyedWrite = await call(
   { bearer: '', noCookie: true, headers: { 'x-api-key': keySecret } }
 );
 check('read-only key cannot write', keyedWrite.status === 403, keyedWrite.body);
+
+// -------------------------------------------------------- release archive --
+// Reaching the archive needs a key minted for installs; a registry key is not
+// one. A file that is not there answers 404 rather than 401 once the caller has
+// proved who they are, which is how the installer tells "wrong key" from "no
+// release on this host".
+const archiveAnonymous = await fetch(base + '/download/telno-1.0.0.tar.gz');
+check('the release archive refuses an anonymous caller', archiveAnonymous.status === 401, archiveAnonymous.status);
+
+const archiveWrongScope = await fetch(base + '/download/telno-1.0.0.tar.gz', {
+  headers: { 'x-api-key': keySecret },
+});
+check(
+  'a registry key cannot download the platform',
+  archiveWrongScope.status === 403,
+  archiveWrongScope.status
+);
+
+const installKey = await call('POST', '/api/system/keys', { label: 'installer', scope: 'install' });
+const installKeySecret = installKey.body.key;
+const archiveWithKey = await fetch(base + '/download/telno-1.0.0.tar.gz', {
+  headers: { 'x-api-key': installKeySecret },
+});
+check(
+  'an install key reaches the archive index rather than the gate',
+  [200, 404].includes(archiveWithKey.status),
+  archiveWithKey.status
+);
+const archiveWithSession = await fetch(base + '/download/telno-1.0.0.tar.gz', {
+  headers: { cookie },
+});
+check(
+  'and a signed-in operator does too',
+  [200, 404].includes(archiveWithSession.status),
+  archiveWithSession.status
+);
+// Leave the key list as this run found it: a suite that leaves keys behind
+// makes the next run's list unreadable.
+const keysAfter = await call('GET', '/api/system/keys');
+const installerRow = (keysAfter.body.items || []).find((k) => k.label === 'installer' && !k.revokedAt);
+if (installerRow) await call('DELETE', `/api/system/keys/${installerRow.id}`);
+
 
 // -------------------------------------------------------------------- vault --
 // Runs last: a stored mail key changes which provider billing and verification

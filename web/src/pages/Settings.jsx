@@ -1702,6 +1702,7 @@ function CreateKey({ onClose, onSaved }) {
       <Select label="Scope" value={scope} onChange={(event) => setScope(event.target.value)}>
         <option value="registry:read">registry:read — search and read numbers</option>
         <option value="registry:write">registry:write — also create and edit</option>
+        <option value="install">install — download the release archive</option>
         <option value="*">* — everything the API allows</option>
       </Select>
       <p className="tiny dim">

@@ -61,17 +61,22 @@ number table and one design system.
 
 ## Install from the published build
 
-A machine without this checkout installs the same platform in one command:
+A machine without this checkout installs the same platform in one command. It needs an
+install key, because the release archive is the platform itself — source included — and this
+repository is private: create one in the console under **Settings → API keys**, scope
+`install`.
 
 ```bash
-curl -fsSL https://telno.services/install.sh | sh
+TELNO_KEY=<key> curl -fsSL https://telno.services/install.sh | sh
 ```
 
 The installer picks the compose file for the host — host networking on Linux, published
 ports on Docker Desktop — fetches [`deploy/env.example`](deploy/env.example) as `.env`, loads
 the release archive from `https://telno.services/download/telno-<version>.tar.gz`, and starts
-the container. It pulls from a registry only when `TELNO_IMAGE` is set: a public registry can
-rate-limit a push, and an install path should not depend on someone else's quota.
+the container. That path is gated: a staff session or a key with the `install` scope, checked
+before the file is looked up so an anonymous caller cannot probe which releases exist. It
+pulls from a registry only when `TELNO_IMAGE` is set: a public registry can rate-limit a
+push, and an install path should not depend on someone else's quota.
 
 Producing that archive is one command against a built image:
 
