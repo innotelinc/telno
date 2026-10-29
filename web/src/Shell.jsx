@@ -20,6 +20,7 @@ const GROUPS = [
       { path: '/trunks', label: 'Trunks', icon: 'server' },
       { path: '/ivr', label: 'Call routing', icon: 'branch' },
       { path: '/voicemail', label: 'Voicemail', icon: 'voicemail' },
+      { path: '/hold-music', label: 'Hold music', icon: 'volume' },
       { path: '/fax', label: 'Fax', icon: 'printer' },
       { path: '/messages', label: 'Messages', icon: 'message' },
     ],

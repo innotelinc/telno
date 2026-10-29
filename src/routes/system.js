@@ -1,3 +1,5 @@
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { db_, now } from '../db/index.js';
 import { config } from '../config.js';
 import { telephonyStatus, applyConfiguration, previewConfiguration } from '../telephony/index.js';
@@ -180,6 +182,51 @@ export default async function systemRoutes(app) {
     db_.run(`UPDATE domains SET ${sets} WHERE slug = ?`, [...Object.values(patch), row.slug]);
     logEvent({ actor: request.account.email, action: 'system.domain_updated', subject: row.slug, ip: request.ip });
     return { domain: domainView(db_.get('SELECT * FROM domains WHERE slug = ?', [row.slug])) };
+  });
+
+  /**
+   * Release archives on the volume, and the command that installs from one.
+   *
+   * The archive is behind the console (see app.js), so the command has to carry
+   * a key: an operator reading this screen needs the two together, or they end
+   * up copying a URL that refuses them and guessing why. The list is read from
+   * the volume on every request, because a release arrives by somebody copying
+   * a file in — there is nothing to reload.
+   */
+  app.get('/system/releases', { preHandler: app.requireRole('owner', 'operator') }, async () => {
+    const dir = join(config.dataDir, 'releases');
+    let names = [];
+    try {
+      names = readdirSync(dir).filter((name) => /\.tar\.gz$/.test(name));
+    } catch {
+      names = [];
+    }
+    const items = names
+      .map((name) => {
+        const stat = statSync(join(dir, name));
+        return {
+          name,
+          bytes: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          url: `/download/${encodeURIComponent(name)}`,
+        };
+      })
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+
+    return {
+      origin: String(config.publicUrl || '').replace(/\/+$/, ''),
+      directory: dir,
+      items,
+      // The installer itself: the version it defaults to, and the files it
+      // fetches beside the archive.
+      installer: {
+        url: '/install.sh',
+        version: items[0] ? (items[0].name.match(/telno-(.+)\.tar\.gz$/) || [])[1] || '' : '',
+        latest: items[0]?.name ? `/download/${items[0].name}` : null,
+      },
+      // Named so the console can say which key scope is the one that works here.
+      keyScope: 'install',
+    };
   });
 
   app.get('/system/keys', { preHandler: app.authenticate }, async () => ({

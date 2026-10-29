@@ -4736,6 +4736,99 @@ check('the channel costs nothing per message', /\$0\.00/.test(secureList.body.su
 const faxSecret = await call('GET', '/api/faxes');
 check('the fax list is still readable after all of it', faxSecret.status === 200, faxSecret.status);
 
+// Scoped: the names below (preview, audio, releases) are ordinary words that
+// this suite already uses elsewhere, and a top-level redeclaration is a syntax
+// error rather than a shadowed variable.
+{
+console.log('\nRelease archive');
+const releases = await call('GET', '/api/system/releases');
+check('the console lists the archives on the volume', releases.status === 200 && Array.isArray(releases.body.items), releases.body);
+check(
+  'and names the installer the command uses',
+  /\/install\.sh$/.test(releases.body.installer?.url || ''),
+  releases.body.installer?.url
+);
+check('the key it needs is the install scope', releases.body.keyScope === 'install', releases.body.keyScope);
+const anonArchive = await fetch(`${base}/download/telno-smoke.tar.gz`);
+check('an anonymous request for the archive is refused', anonArchive.status === 401, anonArchive.status);
+const anonListing = await fetch(`${base}/download/`);
+check('so is the directory, so the URL cannot be used to probe what exists', anonListing.status === 401, anonListing.status);
+const installServe = await fetch(`${base}/install.sh`);
+const installText = await installServe.text();
+check(
+  'the installer is served as a script, never as the console page',
+  installServe.status === 200 && installText.startsWith('#!/bin/sh'),
+  { status: installServe.status, head: installText.slice(0, 40) }
+);
+check('and it sends the key the archive requires', installText.includes('x-api-key'), installText.length);
+
+console.log('\nHold music');
+const mohList = await call('GET', '/api/hold-music');
+check('the generator offers beds and voices', mohList.status === 200 && mohList.body.status?.styles?.length >= 4, mohList.body.status?.styles?.length);
+check('a fresh install has no hold music applied', mohList.body.status && mohList.body.status.applied === null, mohList.body.status?.applied);
+check('and no tracks', Array.isArray(mohList.body.items) && mohList.body.items.length === 0, mohList.body.items?.length);
+
+if (mohList.body.status?.voice?.available) {
+  const spoken = await call('POST', '/api/hold-music', { name: 'Smoke spoken', message: 'Thank you for holding.', style: 'calm', seconds: 20 });
+  check('a written message is spoken into the track', spoken.status === 201 && spoken.body.render?.messageSeconds > 0.4, spoken.body.render);
+} else {
+  const refused = await call('POST', '/api/hold-music', { name: 'Smoke spoken', message: 'Thank you for holding.', seconds: 20 });
+  check(
+    'without the speech engine a message is refused, not silently dropped',
+    refused.status === 400 && /speech engine|synthesizer/i.test(refused.body.error?.message || ''),
+    refused.body.error?.message
+  );
+}
+
+const musicOnly = await call('POST', '/api/hold-music', { name: 'Smoke bed', message: '', style: 'calm', seconds: 20 });
+check('music alone is a track', musicOnly.status === 201 && musicOnly.body.item?.seconds === 20, musicOnly.body);
+check('it is a real file on the data volume', musicOnly.body.item?.bytes > 200000, musicOnly.body.item?.bytes);
+const bedId = musicOnly.body.item?.id;
+
+const audioRes = await fetch(`${base}${musicOnly.body.item?.audioUrl}`, { headers: { cookie } });
+const audioBytes = Buffer.from(await audioRes.arrayBuffer());
+check('the file downloads as WAV', audioRes.status === 200 && /audio\/wav/.test(audioRes.headers.get('content-type') || ''), {
+  status: audioRes.status,
+  type: audioRes.headers.get('content-type'),
+});
+check(
+  'and is 8 kHz mono PCM, which every codec can play',
+  audioBytes.subarray(0, 4).toString() === 'RIFF' &&
+    audioBytes.readUInt32LE(24) === 8000 &&
+    audioBytes.readUInt16LE(22) === 1 &&
+    audioBytes.readUInt16LE(34) === 16,
+  { rate: audioBytes.readUInt32LE(24), channels: audioBytes.readUInt16LE(22), bits: audioBytes.readUInt16LE(34) }
+);
+const anonTrack = await fetch(`${base}/api/hold-music/${bedId}/audio`);
+check('the track is not readable without a session', anonTrack.status === 401, anonTrack.status);
+
+const applied = await call('POST', `/api/hold-music/${bedId}/apply`, {});
+check('applying it succeeds', applied.status === 200 && applied.body.status?.applied?.id === bedId, applied.body.status?.applied);
+check('and the switch class is the one parking already uses', !!applied.body.status?.clazz, applied.body.status?.clazz);
+const strangerApply = await call('POST', `/api/hold-music/${bedId}/apply`, {}, { noCookie: true, bearer: '' });
+check('putting music on the switch needs a session', strangerApply.status === 401, strangerApply.status);
+const preview = await call('GET', '/api/system/config-preview?file=musiconhold.conf');
+check(
+  'musiconhold.conf points at the generated track',
+  preview.status === 200 && preview.body.content?.includes(`moh`) && preview.body.content?.includes(bedId),
+  preview.body.content?.slice(0, 160)
+);
+if (configDir) {
+  const written = existsSync(join(configDir, 'musiconhold.conf')) ? readFileSync(join(configDir, 'musiconhold.conf'), 'utf8') : '';
+  check('the file is on disk, not only in the preview', written.includes(bedId) && written.includes('mode=files'), written.slice(0, 140));
+}
+
+const removed = await call('DELETE', `/api/hold-music/${bedId}`);
+check('deleting the applied track clears it', removed.status === 200 && removed.body.status?.applied === null, removed.body.status?.applied);
+const afterDelete = await call('GET', '/api/system/config-preview?file=musiconhold.conf');
+check(
+  'and the switch goes back to its own hold music',
+  afterDelete.status === 200 && !afterDelete.body.content?.includes(bedId),
+  afterDelete.body.content?.slice(0, 120)
+);
+
+}
+
 globalThis.__smokeStopServer?.();
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

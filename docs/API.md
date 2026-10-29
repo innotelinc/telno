@@ -207,6 +207,26 @@ nothing already incurred and stops the months after it.
 
 ---
 
+## Hold music (session; operator/owner for writes)
+
+A track is generated here rather than uploaded: the message is spoken by the
+synthesizer in the image and set over a bed that is synthesised at the switch's
+own 8 kHz. Files live on the data volume under `$DATA_DIR/moh/<id>/`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/hold-music` | tracks, the applied one, the beds and voices, and whether the speech engine is present |
+| POST | `/hold-music` | `{ name?, message?, style, voice?, seconds? }` — renders and saves a draft |
+| GET | `/hold-music/:id/audio` | the 8 kHz mono WAV, for preview |
+| POST | `/hold-music/:id/apply` | make it the current class and reload `res_musiconhold` |
+| DELETE | `/hold-music/:id` | remove the row and the file; clears the class first if it was applied |
+
+`message` is limited to 800 characters and `seconds` to 20–300. An empty message
+produces music only. When the synthesizer is missing the message is refused with
+an explanation rather than quietly rendered as silence.
+
+---
+
 ## First run (session; operator/owner for writes)
 
 A fresh container has an owner account and no line, so nothing can ring. These
@@ -404,6 +424,7 @@ always carries `total`, `up`, `auth` and `down`.
 | GET | `/system/config-preview?file=` | session | generated `.conf` content |
 | GET | `/system/domains` | session | directory hostnames |
 | PATCH | `/system/domains/:slug` | owner | label, tagline, accent, scope, enabled |
+| GET | `/system/releases` | operator | release archives on the data volume, the public origin and the installer that loads them |
 | GET | `/system/keys` | session | key metadata (never the secret) |
 | POST | `/system/keys` | owner | create; returns the secret once |
 | DELETE | `/system/keys/:id` | owner | revoke |

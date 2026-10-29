@@ -13,6 +13,7 @@ import Moderation from './pages/Moderation.jsx';
 import Voice from './pages/Voice.jsx';
 import Workflows from './pages/Workflows.jsx';
 import Voicemail from './pages/Voicemail.jsx';
+import HoldMusic from './pages/HoldMusic.jsx';
 import Fax from './pages/Fax.jsx';
 import Messages from './pages/Messages.jsx';
 import Billing from './pages/Billing.jsx';
@@ -42,6 +43,7 @@ const PAGES = [
   { path: '/trunks', title: 'Trunks', subtitle: 'Carrier and SIP connectivity', Component: Trunks },
   { path: '/ivr', title: 'Call routing', subtitle: 'Menus, inbound DIDs and destinations', Component: Ivr },
   { path: '/voicemail', title: 'Voicemail', subtitle: 'Recorded messages and transcripts', Component: Voicemail },
+  { path: '/hold-music', title: 'Hold music', subtitle: 'Write the announcement and the bed a caller hears while waiting', Component: HoldMusic },
   { path: '/fax', title: 'Fax', subtitle: 'Inbound documents and outbound sends', Component: Fax },
   { path: '/messages', title: 'Messages', subtitle: 'Texts on your numbers, and secure messages between people on this platform', Component: Messages },
   { path: '/voice', title: 'Voice agents', subtitle: 'Personas that answer and place calls', Component: Voice },

@@ -86,7 +86,9 @@ docker save innotel/telno:1.0.0 innotel/telno:latest | gzip -1 > telno-1.0.0.tar
 
 It belongs in `$DATA_DIR/releases/` on the host that serves the installer; the app serves
 that directory at `/download/` with range support, so a resumed download works and the
-archive stays out of the image. [`deploy/`](deploy) holds both compose files and the
+archive stays out of the image. **Settings → Release archive** lists what is on the volume,
+links each archive, and mints an `install` key, so the command above can be copied from the
+console with a real key in it instead of a placeholder. [`deploy/`](deploy) holds both compose files and the
 installer, and `npm run build` stages all of them into the build output.
 
 ## Quick start
@@ -214,11 +216,11 @@ curl -H "x-api-key: tl_…" "http://localhost:8080/api/numbers?limit=5"
 
 ## Console
 
-Twenty-three screens behind one login, grouped the way the work is done:
+Twenty-four screens behind one login, grouped the way the work is done:
 
 | Group | Screens |
 |---|---|
-| Telephony | Get started, Dashboard, Softphone, Call history, Extensions, Trunks, Call routing, Voicemail, Fax, Messages |
+| Telephony | Get started, Dashboard, Softphone, Call history, Extensions, Trunks, Call routing, Voicemail, Hold music, Fax, Messages |
 | Voice & automation | Voice agents, Workflows, Marketing |
 | Registry | Numbers, Moderation |
 | Business | Billing, Plans, Estate |
@@ -363,6 +365,28 @@ before dialing through the trunk. Turning the switch off in the console removes 
 next save — every change that touches a generated file rewrites it and reloads the switch, so the
 UI and the switch cannot disagree. `MixMonitor` events are then matched
 to the call row, so the recording is playable from call history.
+
+## Hold music, written on the install
+
+A caller on hold is the one moment a platform has their full attention, and it is usually spent on a
+licensed track nobody chose. **Telephony → Hold music** generates the whole track instead: the message is
+typed, spoken, and set over a chord bed, then applied to the switch in one press.
+
+- The bed is synthesised additively at 8 kHz — the rate G.711 already plays at — so there is no resample
+  inside Asterisk and nothing above 3.6 kHz to alias. Four beds (calm, bright, lo-fi, sweep), each a
+  four-bar progression that never quite resolves.
+- The message is spoken by `flite`, which ships in the image. It is a formant synthesizer, so it sounds
+  synthetic; the trade is that a hold announcement costs nothing per word, needs no internet connection
+  and cannot stop working when an API key expires. Four voices are offered, and a track with no message
+  is music alone.
+- A jingle opens the track, the announcement plays once and then every 45 seconds, and the bed ducks
+  under it by 72% with ramps rather than cuts.
+- **Apply** marks the track as current and writes `musiconhold.conf` into the generated switch
+  configuration, then reloads `res_musiconhold`. The class is `PARKING_MOH` (default `default`), so the
+  parking lot and the softphone's hold button play the same thing. Tracks live in `$DATA_DIR/moh/<id>/`, so
+  an image upgrade does not replace them.
+- Deleting the applied track clears the class first and reloads, rather than leaving the switch pointing at
+  a directory that no longer exists.
 
 ## Connected systems
 

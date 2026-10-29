@@ -91,6 +91,10 @@ RUN apt-get update \
       # res_fax_spandsp's runtime library, and ghostscript, which turns a PDF,
       # a scan or a typed page into the TIFF the fax engine transmits.
       libspandsp2 ghostscript \
+      # The hold-music generator's voice. flite is a small, offline, MIT-style
+      # licensed synthesizer: it keeps a written announcement free and local,
+      # with no per-word cost and no dependency on an internet connection.
+      flite \
  && rm -rf /var/lib/apt/lists/* \
  # One unprivileged account owns the database, the switch configuration and the
  # spool. Nothing in this image needs root: every port it listens on is above

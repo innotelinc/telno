@@ -18,6 +18,13 @@ import {
 
 const CONFIG_FILES = ['pjsip.conf', 'extensions.conf', 'voicemail.conf', 'manager.conf'];
 
+const size = (bytes) =>
+  bytes >= 1024 * 1024 * 1024
+    ? `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+    : bytes >= 1024 * 1024
+      ? `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+      : `${Math.max(1, Math.round(bytes / 1024))} kB`;
+
 export default function Settings() {
   const toast = useToast();
   const [domains, setDomains] = useState([]);
@@ -59,6 +66,10 @@ export default function Settings() {
   const [smsFrom, setSmsFrom] = useState('');
   const [smsProviderChoice, setSmsProviderChoice] = useState('');
   const [testingSms, setTestingSms] = useState(false);
+  const [releases, setReleases] = useState(null);
+  const [installKey, setInstallKey] = useState('');
+  const [makingInstallKey, setMakingInstallKey] = useState(false);
+  const [copiedCommand, setCopiedCommand] = useState(false);
   const [backups, setBackups] = useState({ status: null, items: [] });
   const [backupBusy, setBackupBusy] = useState('');
   const [restoring, setRestoring] = useState(null);
@@ -69,6 +80,15 @@ export default function Settings() {
   useEffect(() => {
     setSmsProviderChoice(status?.channels?.sms?.preference || '');
   }, [status?.channels?.sms?.preference]);
+
+  // Releases are read from the data volume, so this is a request rather than a
+  // value on the status object: a new archive appears without a restart.
+  useEffect(() => {
+    api
+      .get('/system/releases')
+      .then(setReleases)
+      .catch(() => setReleases(null));
+  }, []);
 
   // Branding is its own request: it is white-label configuration, not part of
   // the operator status the rest of this page reads.
@@ -434,6 +454,41 @@ export default function Settings() {
     }
   };
 
+  /**
+   * An install key, minted here so the command below can be copied with a real
+   * key in it. It is shown once — the server keeps only a hash — so the card
+   * keeps it in state for this visit and nothing else remembers it.
+   */
+  const mintInstallKey = async () => {
+    setMakingInstallKey(true);
+    try {
+      const result = await api.post('/system/keys', { label: 'Installer', scope: releases?.keyScope || 'install' });
+      setInstallKey(result.key);
+      setCopiedCommand(false);
+      toast.success('Install key created', 'Copy the command below — the key is not shown again after you leave.');
+      load();
+    } catch (err) {
+      toast.error('Could not create an install key', err.message);
+    } finally {
+      setMakingInstallKey(false);
+    }
+  };
+
+  const installCommand = () => {
+    const origin = releases?.origin || window.location.origin;
+    return `TELNO_KEY=${installKey || '<install key>'} curl -fsSL ${origin}/install.sh | sh`;
+  };
+
+  const copyInstall = async () => {
+    try {
+      await navigator.clipboard.writeText(installCommand());
+      setCopiedCommand(true);
+      toast.success('Install command copied');
+    } catch (err) {
+      toast.error('Could not copy', err.message);
+    }
+  };
+
   const revoke = async (key) => {
     if (!window.confirm(`Revoke “${key.label}”? Integrations using it will start failing.`)) return;
     try {
@@ -580,6 +635,96 @@ export default function Settings() {
           </p>
         </Card>
       </div>
+
+      <Card
+        title="Release archive"
+        subtitle="The image the installer loads — served from behind this console, not the open internet"
+        actions={
+          <Button size="sm" variant="primary" icon="key" onClick={mintInstallKey} loading={makingInstallKey}>
+            {installKey ? 'New install key' : 'Create install key'}
+          </Button>
+        }
+      >
+        <p className="tiny muted" style={{ marginTop: 0 }}>
+          The archive is the platform itself, source included, so it is not a public URL: an operator
+          session or a key with the <code>install</code> scope is required, and an anonymous request is
+          refused before the server looks for the file. The installer sends the key as{' '}
+          <code>x-api-key</code>, which is why it belongs in front of the command.
+        </p>
+
+        {releases === null ? (
+          <p className="tiny dim">Could not read the releases on this install.</p>
+        ) : releases.items.length ? (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Archive</th>
+                  <th>Size</th>
+                  <th>Added</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {releases.items.map((item) => (
+                  <tr key={item.name}>
+                    <td className="mono tiny truncate" style={{ maxWidth: 260 }}>{item.name}</td>
+                    <td className="tiny muted">{size(item.bytes)}</td>
+                    <td className="tiny dim">{relativeTime(item.modifiedAt)}</td>
+                    <td className="align-right">
+                      <a className="btn ghost sm" href={item.url}>
+                        <Icon name="download" />
+                        Download
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty icon="download" title="No release archive on this install">
+            A release is a <code>docker save</code> of the built image, compressed and copied into{' '}
+            <code>{releases.directory}</code>. Until one is there, the installer pulls the image from the
+            registry instead.
+          </Empty>
+        )}
+
+        <div style={{ marginTop: 16 }}>
+          <label className="label" htmlFor="install-command">Install a second machine</label>
+          <pre
+            id="install-command"
+            className="mono"
+            style={{
+              margin: '6px 0 10px',
+              padding: 12,
+              background: '#08080e',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              fontSize: '0.75rem',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              color: installKey ? 'var(--text)' : 'var(--text-2)',
+            }}
+          >
+            {installCommand()}
+          </pre>
+          <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+            <Button size="sm" variant="ghost" icon={copiedCommand ? 'check' : 'copy'} onClick={copyInstall}>
+              {copiedCommand ? 'Copied' : 'Copy command'}
+            </Button>
+            {installKey ? (
+              <span className="tiny dim">
+                This key is shown once. Revoke it under API keys when the machine is installed.
+              </span>
+            ) : (
+              <span className="tiny dim">
+                Create an install key to fill the command in, or substitute one you already have.
+              </span>
+            )}
+          </div>
+        </div>
+      </Card>
 
       <Card
         title="Generated switch configuration"

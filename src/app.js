@@ -178,6 +178,21 @@ export async function buildApp(opts = {}) {
     // with index.html — the browser then refuses it as a bad MIME type.
     await app.register(fastifyStatic, { root: dist, wildcard: true, index: ['index.html'] });
 
+    // The installer and the files it fetches. Registered explicitly, in front
+    // of the static handler, because they are fetched by `curl | sh`: if an image
+    // ships without one, the SPA fallback would answer with index.html and the
+    // quickstart would pipe a web page into a shell. A 404 here is the only
+    // honest answer, and `curl -f` turns it into a failed install instead.
+    for (const file of ['install.sh', 'docker-compose.yml', 'docker-compose.desktop.yml', 'env.example']) {
+      const type = file.endsWith('.sh') ? 'text/x-shellscript; charset=utf-8' : 'text/plain; charset=utf-8';
+      app.get(`/${file}`, async (request, reply) => {
+        if (!existsSync(join(dist, file))) {
+          return reply.status(404).type('text/plain; charset=utf-8').send(`This image does not ship ${file}.`);
+        }
+        return reply.header('cache-control', 'no-cache').type(type).sendFile(file, dist);
+      });
+    }
+
     // The release image, for the installer the quickstart curls. A registry is
     // the better home for it and the installer prefers one when TELNO_IMAGE is
     // set, but a public registry can rate-limit the push — and an install path

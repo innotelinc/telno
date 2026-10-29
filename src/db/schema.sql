@@ -945,3 +945,22 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_account ON payments (account_id, received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments (invoice_id);
+
+-- Hold music. Each row is one rendered track on the data volume: the words, the
+-- style they were set to, and the file the switch plays. `applied` is the one
+-- class musiconhold.conf points at, so exactly one row is current and the rest
+-- are kept as drafts an operator can go back to.
+CREATE TABLE IF NOT EXISTS hold_music (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  message    TEXT NOT NULL DEFAULT '',
+  style      TEXT NOT NULL DEFAULT 'calm',
+  voice      TEXT NOT NULL DEFAULT 'slt',
+  seconds    INTEGER NOT NULL DEFAULT 60,
+  file       TEXT NOT NULL,
+  bytes      INTEGER NOT NULL DEFAULT 0,
+  applied    INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hold_music_applied ON hold_music (applied);
