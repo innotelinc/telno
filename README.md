@@ -146,6 +146,11 @@ That first trap is why [`apps/server/src/ata/raw.ts`](apps/server/src/ata/raw.ts
 raw socket and parses forgivingly. Nothing is proxied to the device's own page: the platform reads
 the box and renders what it found.
 
+Checked against a live unit on the LAN (`192.168.1.45`, V1 firmware, voice image `16480`): the
+unauthenticated endpoints answer through the raw transport, the unit reports `5` access attempts and
+`0` invalid, and with no password configured the report is `auth` with the note that none is set —
+no attempt is spent learning that.
+
 Enrol a unit the usual way; the address it enrols from is recorded as `addr`, which is where the
 console then reaches it (set it by hand on the device if the box was enrolled through a proxy).
 Set the adaptor's admin password once:
