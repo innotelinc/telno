@@ -61,6 +61,13 @@ export const env = {
   voiceNode: process.env.TELNO_VOICE_NODE ?? '',
   voicePort: port(process.env.TELNO_VOICE_PORT, 7443),
   voiceRelay: process.env.TELNO_VOICE_RELAY ?? '',
+  /**
+   * Admin password for analog adaptors' own web consoles. Never leaves the
+   * server: it is used to open a session and is never returned by an endpoint.
+   */
+  ataPassword: process.env.TELNO_ATA_PASSWORD ?? '',
+  ataUser: process.env.TELNO_ATA_USER ?? 'admin',
+  ataTimeoutMs: num(process.env.TELNO_ATA_TIMEOUT_MS, 6000),
   isProduction: process.env.NODE_ENV === 'production',
   /**
    * Console allowlist. Defaults to loopback plus the RFC 1918 ranges: the

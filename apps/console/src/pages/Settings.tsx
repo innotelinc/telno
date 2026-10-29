@@ -104,6 +104,25 @@ export function SettingsPage({ user }: { user: SessionUser }) {
                     onChange={(e) => set('relay', e.target.value)}
                   />
                 </Field>
+                <Field
+                  label="SIP edge"
+                  help="Adaptors register here over SIP; the edge bridges to cantus. Empty = the domain on 5060"
+                >
+                  <input
+                    className="input mono"
+                    value={form.sipEdge ?? ''}
+                    placeholder="edge.telno.local"
+                    onChange={(e) => set('sipEdge', e.target.value)}
+                  />
+                </Field>
+                <Field label="SIP port" help="Port an adaptor sends SIP to on the edge">
+                  <input
+                    className="input mono"
+                    type="number"
+                    value={form.sipPort ?? 5060}
+                    onChange={(e) => set('sipPort', Number(e.target.value))}
+                  />
+                </Field>
                 <Field label="Session lifetime" help="Hours before an operator is signed out">
                   <input
                     className="input mono"

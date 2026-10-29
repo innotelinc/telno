@@ -35,6 +35,7 @@ export function toDevice(row: DeviceRow): Device {
     lastEnrolledAt: row.last_enrolled_at,
     createdAt: row.created_at,
     tokenRotatedAt: row.token_rotated_at,
+    addr: row.addr ?? null,
   };
 }
 
@@ -120,6 +121,8 @@ export function settingsSnapshot(): Settings {
     voicePort: Number(getSetting('voice.port', '7443')) || 7443,
     relay: getSetting('voice.relay', ''),
     ntp: getSetting('voice.ntp', 'pool.ntp.org'),
+    sipEdge: getSetting('voice.sipEdge', ''),
+    sipPort: Number(getSetting('voice.sipPort', '5060')) || 5060,
     requireSignedConfig: getSetting('provisioning.requireSignature', '1') === '1',
     sessionHours: Number(getSetting('session.hours', '12')) || 12,
     trustedNetworks: trustedNetworkText(),
@@ -192,6 +195,8 @@ export function deviceConfigFor(row: DeviceRow): DeviceConfig {
       voiceNode: settings.voiceNode,
       voicePort: settings.voicePort,
       relay: settings.relay || null,
+      sipEdge: settings.sipEdge,
+      sipPort: settings.sipPort,
       documentId: routing.documentId,
       routingRevision: routing.revision,
     },

@@ -1,6 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { DeviceConfig, ModelKey, RoutingMode } from '@telno/shared';
 import { DEVICE_MODELS, isModelKey } from '@telno/shared';
+import { AtaUnsupported } from './ata/device.js';
+import { env } from './env.js';
+import { forgetAdaptor, probeAdaptor, rebootAdaptor } from './ata/probe.js';
 import {
   db,
   hashPassword,
@@ -61,6 +64,27 @@ function bad(reply: FastifyReply, message: string, code = 400): null {
   reply.code(code).send({ error: message });
   return null;
 }
+
+/**
+ * Accept what someone actually pastes into a device address field.
+ *
+ * `http://192.168.1.45/`, `192.168.1.45:80` and a bare address all mean the
+ * same box; anything that is not shaped like a host is refused rather than
+ * stored, because it becomes a connection target later.
+ */
+function cleanHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const withoutScheme = trimmed.replace(/^[a-z]+:\/\//i, '').split('/')[0] ?? '';
+  const bare = withoutScheme.replace(/^::ffff:/i, '').replace(/:\d+$/, '');
+  if (!bare) return null;
+  const hostname = /^[A-Za-z0-9._-]+$/.test(bare);
+  const ipv6 = /^[0-9a-f:]+$/i.test(bare);
+  return hostname || ipv6 ? bare : null;
+}
+
+/** Loopback is where this server lives, never where a device lives. */
+const isLoopback = (host: string): boolean => host === '::1' || host.startsWith('127.');
 
 function deviceRow(id: string): DeviceRow | undefined {
   return db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as DeviceRow | undefined;
@@ -263,10 +287,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return bad(reply, 'invalid status');
     }
     if (!label) return bad(reply, 'label cannot be empty');
-    db.prepare('UPDATE devices SET label = ?, location = ?, status = ? WHERE id = ?').run(
+    let addr = row.addr;
+    if (body.addr !== undefined) {
+      const raw = str(body.addr).trim();
+      const host = cleanHost(raw);
+      if (raw && !host) return bad(reply, 'that is not a usable device address');
+      addr = host && !isLoopback(host) ? host : null;
+    }
+    db.prepare('UPDATE devices SET label = ?, location = ?, status = ?, addr = ? WHERE id = ?').run(
       label,
       location,
       status,
+      addr,
       id,
     );
     recordEvent('device', 'info', `Device "${label}" updated.`, { serial: row.serial, status });
@@ -652,11 +684,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       voiceNode: 'voice.node',
       relay: 'voice.relay',
       ntp: 'voice.ntp',
+      sipEdge: 'voice.sipEdge',
     };
     for (const [field, key] of Object.entries(map)) {
       if (body[field] !== undefined) setSetting(key, str(body[field]).trim());
     }
     if (body.voicePort !== undefined) setSetting('voice.port', String(Number(body.voicePort) || 7443));
+    if (body.sipPort !== undefined) {
+      const port = Number(body.sipPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return bad(reply, 'sipPort must be 1-65535');
+      setSetting('voice.sipPort', String(port));
+    }
     if (body.requireSignedConfig !== undefined) {
       setSetting('provisioning.requireSignature', body.requireSignedConfig ? '1' : '0');
     }
@@ -708,12 +746,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     const token = issueDeviceToken();
     const timestamp = now();
+    // The address it enrolled from is where its own web console answers, which
+    // is the only way the platform can reach an analog adaptor afterwards.
+    const source = cleanHost(req.ip ?? '');
+    const addr = source && !isLoopback(source) ? source : null;
     if (!row) {
       const id = uid();
       db.prepare(
         `INSERT INTO devices (id, serial, mac, model, label, location, status, firmware,
-          config_version, config_issued_at, token_hash, last_seen_at, last_enrolled_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          config_version, config_issued_at, token_hash, last_seen_at, last_enrolled_at, created_at, addr)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).run(
         id,
         serial,
@@ -731,13 +773,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         timestamp,
         timestamp,
         timestamp,
+        addr,
       );
       row = deviceRow(id)!;
     } else {
       db.prepare(
         `UPDATE devices SET status = 'online', token_hash = ?, mac = COALESCE(?, mac),
           firmware = COALESCE(?, firmware), config_issued_at = COALESCE(config_issued_at, ?),
-          last_seen_at = ?, last_enrolled_at = ? WHERE id = ?`,
+          last_seen_at = ?, last_enrolled_at = ?, addr = COALESCE(?, addr) WHERE id = ?`,
       ).run(
         tokenDigest(token),
         str(body.mac).trim() || null,
@@ -745,6 +788,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         timestamp,
         timestamp,
         timestamp,
+        addr,
         row.id,
       );
       row = deviceRow(row.id)!;
@@ -853,6 +897,74 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       version: config.version,
       signatureMatches: deviceConfigSignature(config) === config.signature,
     };
+  });
+
+  /* ---------------------------------------------------- analog adaptor (ATA) */
+  /*
+   * The adaptor is read through its own console, not proxied to it: that page is
+   * served by a web server that writes malformed HTTP, has no idea what a Telno
+   * extension is, and describes a port as a table cell. The platform reads the
+   * box and answers with normal JSON.
+   *
+   * Two rules keep this safe to point at real hardware: the admin password is
+   * read from the environment and never returned by any endpoint, and nothing
+   * here retries a login — five refusals cost fifteen minutes of that console,
+   * so a locked device is reported as locked and left alone.
+   */
+
+  const adaptorTarget = (id: string, reply: FastifyReply): { host: string } | null => {
+    const row = deviceRow(id);
+    if (!row) {
+      bad(reply, 'device not found', 404);
+      return null;
+    }
+    if (row.model !== 'ht802') {
+      bad(reply, 'only the analog adaptor has a console of its own to read', 400);
+      return null;
+    }
+    if (!row.addr) {
+      bad(
+        reply,
+        'this adaptor has no LAN address yet: it is taken from the address it enrolls from, or set it on the device',
+        409,
+      );
+      return null;
+    }
+    if (!env.ataPassword) {
+      bad(
+        reply,
+        'TELNO_ATA_PASSWORD is not configured, so the platform cannot sign in to the adaptor. Set it and restart.',
+        409,
+      );
+      return null;
+    }
+    return { host: row.addr };
+  };
+
+  app.get('/api/devices/:id/ata', async (req, reply) => {
+    if (!requireSession(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const target = adaptorTarget(id, reply);
+    if (!target) return null;
+    const query = req.query as { refresh?: string };
+    const view = await probeAdaptor(target, { refresh: query.refresh === '1' });
+    return { adaptor: view };
+  });
+
+  app.post('/api/devices/:id/ata/reboot', async (req, reply) => {
+    if (!requireSession(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const target = adaptorTarget(id, reply);
+    if (!target) return null;
+    try {
+      const result = await rebootAdaptor(target);
+      recordEvent('device', 'warn', `Adaptor at ${target.host} was told to reboot.`, { deviceId: id });
+      return { ...result, cached: false };
+    } catch (err: unknown) {
+      if (err instanceof AtaUnsupported) return bad(reply, err.message, 409);
+      forgetAdaptor(target.host);
+      return bad(reply, err instanceof Error ? err.message : 'the adaptor did not accept the reboot', 502);
+    }
   });
 
   app.log.info('Telno control-plane routes registered');

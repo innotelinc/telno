@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Device, DeviceConfig, Line, ModelKey } from '@telno/shared';
+import type { AdaptorOverview, Device, DeviceConfig, Line, ModelKey } from '@telno/shared';
 import { DEVICE_MODELS, MODEL_KEYS } from '@telno/shared';
 import { api } from '../api';
 import {
@@ -517,6 +517,12 @@ function DeviceDetail({
             <span className="muted">Token rotated</span>
             <span className="spacer">{timeAgo(device.tokenRotatedAt)}</span>
           </div>
+          {device.model === 'ht802' ? (
+            <div className="row">
+              <span className="muted">Adaptor address</span>
+              <span className="spacer mono">{device.addr ?? 'not enrolled'}</span>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -613,6 +619,8 @@ function DeviceDetail({
         </div>
       )}
 
+      {device.model === 'ht802' ? <AdaptorPanel device={device} /> : null}
+
       {showConfig ? (
         config.loading ? (
           <SkeletonRows rows={6} />
@@ -629,5 +637,189 @@ function DeviceDetail({
         )
       ) : null}
     </Modal>
+  );
+}
+
+const ADAPTOR_STATE: Record<AdaptorOverview['state'], { label: string; tone: 'ok' | 'warn' | 'err' }> = {
+  online: { label: 'Signed in', tone: 'ok' },
+  reachable: { label: 'Reachable, not signed in', tone: 'warn' },
+  locked: { label: 'Locked out', tone: 'err' },
+  auth: { label: 'Password refused', tone: 'err' },
+  stale: { label: 'Session went stale', tone: 'warn' },
+  unreachable: { label: 'Unreachable', tone: 'err' },
+};
+
+/**
+ * The analog adaptor's own report.
+ *
+ * Deliberately not a proxy to the box's web page: that console is served by a
+ * web server that writes malformed HTTP, knows nothing about a Telno extension,
+ * and describes a port as a table cell. This renders what the platform read
+ * instead, and is honest about which parts the firmware would not surrender.
+ */
+function AdaptorPanel({ device }: { device: Device }) {
+  const [nonce, setNonce] = useState(0);
+  const [confirmReboot, setConfirmReboot] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
+  const { push } = useToast();
+  const adaptor = useAsync<{ adaptor: AdaptorOverview }>(
+    () => api.deviceAta(device.id, nonce > 0),
+    [device.id, nonce],
+  );
+
+  const view = adaptor.data?.adaptor ?? null;
+  const state = view ? ADAPTOR_STATE[view.state] : null;
+
+  const reboot = async () => {
+    setRebooting(true);
+    try {
+      await api.rebootAta(device.id);
+      push('Adaptor is restarting — it drops off the network for about a minute.', 'ok');
+      setConfirmReboot(false);
+      setNonce((n) => n + 1);
+    } catch (error) {
+      push(error instanceof Error ? error.message : 'The adaptor did not accept the reboot', 'err');
+    } finally {
+      setRebooting(false);
+    }
+  };
+
+  return (
+    <>
+      <hr className="sep" />
+      <div className="row wrap">
+        <strong style={{ fontSize: 13 }}>Adaptor</strong>
+        {state ? <Badge tone={state.tone} dot>{state.label}</Badge> : null}
+        {view ? <Badge>firmware {view.firmware}</Badge> : null}
+        {view ? <Badge>{view.target.label}</Badge> : null}
+        {view?.cached ? <Badge>cached</Badge> : null}
+        <div className="spacer" />
+        <Button size="sm" icon="refresh" loading={adaptor.loading} onClick={() => setNonce((n) => n + 1)}>
+          Probe
+        </Button>
+        <Button
+          size="sm"
+          variant={confirmReboot ? 'danger' : 'ghost'}
+          icon="bolt"
+          loading={rebooting}
+          disabled={!view?.reachable}
+          onClick={() => (confirmReboot ? reboot() : setConfirmReboot(true))}
+          onBlur={() => setConfirmReboot(false)}
+        >
+          {confirmReboot ? 'Confirm reboot' : 'Reboot'}
+        </Button>
+      </div>
+
+      {adaptor.loading && !view ? (
+        <SkeletonRows rows={3} />
+      ) : adaptor.error ? (
+        <ErrorBox message={adaptor.error} onRetry={() => setNonce((n) => n + 1)} />
+      ) : view ? (
+        <div className="stack">
+          {view.locked ? (
+            <div className="callout warn">
+              <strong>Locked out for another {Math.ceil(view.remainSec)}s</strong>
+              <span>
+                {view.lock?.invalidAttempts ?? 0} logins were refused, and this firmware counts every attempt.
+                The platform will not try a password until the timer runs out.
+              </span>
+            </div>
+          ) : null}
+
+          {view.notes.map((note) => (
+            <div className="callout warn" key={note}>
+              <span>{note}</span>
+            </div>
+          ))}
+
+          <div className="grid cols-2">
+            <div className="stack small">
+              <div className="row">
+                <span className="muted">Model</span>
+                <span className="spacer">{view.identity?.model ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="muted">Serial</span>
+                <span className="spacer mono">{view.identity?.serial ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="muted">MAC</span>
+                <span className="spacer mono">{view.identity?.mac ?? '—'}</span>
+              </div>
+            </div>
+            <div className="stack small">
+              <div className="row">
+                <span className="muted">Uptime</span>
+                <span className="spacer">{view.identity?.uptime ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="muted">IP</span>
+                <span className="spacer mono">{view.identity?.ip ?? view.target.host}</span>
+              </div>
+              <div className="row">
+                <span className="muted">Checked</span>
+                <span className="spacer">
+                  {timeAgo(view.checkedAt)} · {view.tookMs} ms
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {view.ports.length > 0 ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>FXS</th>
+                    <th>Hook</th>
+                    <th>Registration</th>
+                    <th>SIP user</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {view.ports.map((port) => (
+                    <tr key={port.port}>
+                      <td className="mono">{port.port}</td>
+                      <td className="small">{port.hook ?? '—'}</td>
+                      <td className="small">{port.registration ?? '—'}</td>
+                      <td className="mono small">{port.sipUser ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="row small muted">
+              <span>This firmware reported no FXS port state.</span>
+            </div>
+          )}
+
+          {view.accounts.length > 0 ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>FXS</th>
+                    <th>SIP server</th>
+                    <th>User</th>
+                    <th>Local port</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {view.accounts.map((account) => (
+                    <tr key={account.port}>
+                      <td className="mono">{account.port}</td>
+                      <td className="mono small">{account.server ?? '—'}</td>
+                      <td className="mono small">{account.user ?? '—'}</td>
+                      <td className="mono small">{account.localPort ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </>
   );
 }

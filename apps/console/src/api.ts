@@ -1,4 +1,5 @@
 import type {
+  AdaptorOverview,
   CantusRouteDecision,
   CantusStatus,
   Device,
@@ -78,6 +79,10 @@ export const api = {
   deviceConfig: (id: string) => request<{ config: DeviceConfig; etag: string }>(`/api/devices/${id}/config`),
   verifyConfig: (id: string) =>
     post<{ keyId: string; version: number; signatureMatches: boolean }>(`/api/devices/${id}/verify-config`),
+  deviceAta: (id: string, refresh = false) =>
+    request<{ adaptor: AdaptorOverview }>(`/api/devices/${id}/ata${refresh ? '?refresh=1' : ''}`),
+  rebootAta: (id: string) =>
+    post<{ status: number; accepted: boolean }>(`/api/devices/${id}/ata/reboot`),
 
   lines: () => request<{ lines: Line[] }>('/api/lines'),
   createLine: (body: Record<string, unknown>) => post<{ line: Line }>('/api/lines', body),

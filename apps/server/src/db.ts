@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS devices (
   token_rotated_at TEXT,
   last_seen_at TEXT,
   last_enrolled_at TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  /* Where the device enrolled from: the address its own console answers on. */
+  addr TEXT
 );
 
 CREATE TABLE IF NOT EXISTS lines (
@@ -106,13 +108,16 @@ CREATE TABLE IF NOT EXISTS routing_revisions (
 );
 `);
 
-// Migration for databases created before the config timestamp existed.
+// Migrations for databases created before these columns existed.
 {
   const columns = db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'config_issued_at')) {
     db.exec('ALTER TABLE devices ADD COLUMN config_issued_at TEXT');
   }
   db.exec('UPDATE devices SET config_issued_at = created_at WHERE config_issued_at IS NULL');
+  if (!columns.some((column) => column.name === 'addr')) {
+    db.exec('ALTER TABLE devices ADD COLUMN addr TEXT');
+  }
 }
 
 export const now = (): string => new Date().toISOString();
@@ -216,6 +221,7 @@ export interface DeviceRow {
   last_seen_at: string | null;
   last_enrolled_at: string | null;
   created_at: string;
+  addr: string | null;
 }
 
 export interface LineRow {

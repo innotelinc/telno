@@ -93,6 +93,8 @@ export interface Device {
   lastEnrolledAt: string | null;
   createdAt: string;
   tokenRotatedAt: string | null;
+  /** Address the device enrolled from — where its own web console can be reached. */
+  addr: string | null;
 }
 
 export type RoutingMode = 'business-hours' | 'always' | 'forward' | 'voicemail';
@@ -145,6 +147,12 @@ export interface Settings {
   voicePort: number;
   relay: string;
   ntp: string;
+  /**
+   * SIP server an analog adaptor registers against, when the deployment has an
+   * edge that bridges SIP to cantus. Empty means `domain:sipPort`.
+   */
+  sipEdge: string;
+  sipPort: number;
   /** Enforced on new provisioning revisions. */
   requireSignedConfig: boolean;
   sessionHours: number;
@@ -160,6 +168,29 @@ export interface SessionUser {
 }
 
 /** Signed configuration body delivered to a device. */
+export interface CantusVoice {
+  transport: 'cantus/1';
+  node: string;
+  port: number;
+  relay: string | null;
+  reachMs: number;
+  codecs: string[];
+  keepaliveMs: number;
+}
+
+export interface SipVoice {
+  transport: 'sip';
+  /** Host the adaptor sends SIP to: the edge when configured, else the domain. */
+  server: string;
+  port: number;
+  domain: string;
+  expiresSec: number;
+  /** Local SIP port to bind per FXS port; distinct ports keep NAT paths apart. */
+  localPorts: number[];
+  codecs: string[];
+  note: string;
+}
+
 export interface DeviceConfig {
   schema: typeof CONFIG_SCHEMA;
   version: number;
@@ -173,15 +204,14 @@ export interface DeviceConfig {
     location: string;
   };
   network: { ntp: string; timezone: string };
-  voice: {
-    transport: 'cantus/1';
-    node: string;
-    port: number;
-    relay: string | null;
-    reachMs: number;
-    codecs: string[];
-    keepaliveMs: number;
-  };
+  /**
+   * Cantus carries signalling and media on one socket, which a desk phone can
+   * speak natively. An analog adaptor cannot: its only voice protocol is SIP,
+   * so it is told to register against a SIP edge and the edge bridges to cantus.
+   * A config that claimed `cantus/1` for an HT802 would be a document the device
+   * cannot act on.
+   */
+  voice: CantusVoice | SipVoice;
   accounts: Array<{
     slot: number;
     aor: string;
@@ -193,6 +223,91 @@ export interface DeviceConfig {
   keyId: string;
   /** Hex HMAC-SHA256 over the canonical body. */
   signature: string;
+}
+
+/* ------------------------------------------------------------- analog adaptor */
+
+/**
+ * What the platform could learn from an adaptor's own console.
+ *
+ * Two HT802 firmwares are in the field and they share no protocol, so every
+ * field is nullable: "this firmware does not report a serial" is a fact the
+ * console states rather than a blank that looks like a fault.
+ */
+export type AdaptorState = 'unreachable' | 'locked' | 'auth' | 'reachable' | 'online' | 'stale';
+
+export interface AdaptorTarget {
+  host: string;
+  port: number;
+  label: string;
+}
+
+export interface AdaptorLock {
+  locked: boolean;
+  remainSec: number;
+  accessAttempts: number;
+  invalidAttempts: number;
+}
+
+export interface AdaptorIdentity {
+  model: string | null;
+  firmware: string | null;
+  hardware: string | null;
+  bootloader: string | null;
+  serial: string | null;
+  mac: string | null;
+  uptime: string | null;
+  ip: string | null;
+}
+
+export interface AdaptorPort {
+  port: number;
+  enabled: boolean | null;
+  hook: string | null;
+  /** Configuration state as the device reports it, never a claim of registration. */
+  registration: string | null;
+  sipUser: string | null;
+}
+
+export interface AdaptorAccount {
+  port: number;
+  server: string | null;
+  user: string | null;
+  name: string | null;
+  active: string | null;
+  localPort: string | null;
+}
+
+export interface AdaptorNetwork {
+  ip: string | null;
+  mask: string | null;
+  gateway: string | null;
+  dns: string | null;
+  mac: string | null;
+  dhcp: string | null;
+}
+
+export interface AdaptorOverview {
+  target: AdaptorTarget;
+  firmware: 'v1' | 'v2';
+  state: AdaptorState;
+  reachable: boolean;
+  locked: boolean;
+  remainSec: number;
+  authenticated: boolean;
+  lock: AdaptorLock | null;
+  system: { voiceImage: string | null; role: string | null } | null;
+  sip: { exists: boolean } | null;
+  identity: AdaptorIdentity | null;
+  ports: AdaptorPort[];
+  accounts: AdaptorAccount[];
+  network: AdaptorNetwork | null;
+  sources: Record<string, string>;
+  notes: string[];
+  tookMs: number;
+  checkedAt: string;
+  /** True when this report came from the platform's short-lived cache. */
+  cached?: boolean;
 }
 
 export interface ProvisioningProfileSummary {

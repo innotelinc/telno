@@ -1,5 +1,6 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import type { DeviceConfig, Line, ModelKey, RoutingMode } from '@telno/shared';
+import { voiceProfileFor, type VoiceSettings } from './voice.js';
 import { CONFIG_SCHEMA } from '@telno/shared';
 import { provisioningKey } from './db.js';
 
@@ -67,13 +68,9 @@ export interface ConfigInput {
     created_at?: string | null;
   };
   lines: Line[];
-  settings: {
-    domain: string;
+  settings: VoiceSettings & {
     timezone: string;
     ntp: string;
-    voiceNode: string;
-    voicePort: number;
-    relay: string | null;
     documentId: string;
     routingRevision: number;
   };
@@ -113,17 +110,7 @@ export function buildDeviceConfig(input: ConfigInput): DeviceConfig {
       location: device.location,
     },
     network: { ntp: settings.ntp, timezone: settings.timezone },
-    voice: {
-      // One socket for signalling and media: no SDP, no RTP port range, no
-      // static NAT knobs to reconcile on the device.
-      transport: 'cantus/1',
-      node: settings.voiceNode,
-      port: settings.voicePort,
-      relay: settings.relay,
-      reachMs: 300,
-      codecs: device.model === 't750' ? ['pcm-s16/8000/1'] : ['pcm-s16/8000/1'],
-      keepaliveMs: 15_000,
-    },
+    voice: voiceProfileFor(device.model, settings),
     accounts,
     routing: { documentId: settings.documentId, revision: settings.routingRevision },
   };

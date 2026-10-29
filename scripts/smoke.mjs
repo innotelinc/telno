@@ -161,6 +161,7 @@ section('device lifecycle');
 let device;
 let enrollmentCode;
 let deviceToken;
+let adaptorDeviceId = null;
 let etag;
 {
   const created = await call('/api/devices', {
@@ -171,6 +172,25 @@ let etag;
   enrollmentCode = created.json?.enrollment?.code;
   check('device created', created.status === 201 && Boolean(device), `serial ${device?.serial}`);
   check('enrollment code issued', Boolean(enrollmentCode), enrollmentCode ?? 'none');
+
+  // Gates only: no hardware is contacted, so these stay fast and hermetic.
+  const phoneConsole = await call(`/api/devices/${device.id}/ata`);
+  check(
+    'a desk phone has no adaptor console to read',
+    phoneConsole.status === 400,
+    `HTTP ${phoneConsole.status}`,
+  );
+  const adaptor = await call('/api/devices', {
+    method: 'POST',
+    body: { model: 'ht802', label: 'Smoke test adaptor', issueCode: true },
+  });
+  adaptorDeviceId = adaptor.json?.device?.id ?? null;
+  const noAddress = await call(`/api/devices/${adaptorDeviceId}/ata`);
+  check(
+    'an adaptor without a LAN address is refused, not guessed at',
+    noAddress.status === 409,
+    `HTTP ${noAddress.status}`,
+  );
 
   const enrolled = await call('/prov/v1/enroll', {
     method: 'POST',
@@ -389,6 +409,10 @@ section('cleanup');
   if (provDeviceId) {
     const provRemoved = await call(`/api/devices/${provDeviceId}`, { method: 'DELETE' });
     check('provisioning test device removed', provRemoved.status === 200, `HTTP ${provRemoved.status}`);
+  }
+  if (adaptorDeviceId) {
+    const adaptorRemoved = await call(`/api/devices/${adaptorDeviceId}`, { method: 'DELETE' });
+    check('adaptor test device removed', adaptorRemoved.status === 200, `HTTP ${adaptorRemoved.status}`);
   }
   if (lineId) {
     const lineRemoved = await call(`/api/lines/${lineId}`, { method: 'DELETE' });

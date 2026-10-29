@@ -5,7 +5,7 @@ The control plane and operator console for the **Telno T750 2026** desk phone an
 first-party signed provisioning, and voice routing through
 [cantus](https://github.com/innotelinc/cantus) — no PBX, no SIP registrar, no SDP.
 
-![stack](https://img.shields.io/badge/voice-cantus%201.0-7c74ff) ![runtime](https://img.shields.io/badge/node-%E2%89%A522.5-3ddc97) ![tests](https://img.shields.io/badge/smoke-47%20checks-7c74ff)
+![stack](https://img.shields.io/badge/voice-cantus%201.0-7c74ff) ![runtime](https://img.shields.io/badge/node-%E2%89%A522.5-3ddc97) ![tests](https://img.shields.io/badge/smoke-50%20checks-7c74ff)
 
 ## What is here
 
@@ -129,6 +129,45 @@ POST /prov/v1/report            { "configVersion": 3, "firmware": "2026.1.4" }
 
 A device behind the current revision is flagged in the console and in the event ledger.
 
+### The analog adaptor (HT802)
+
+An HT802 is not a small desk phone: it is a box with two FXS ports, its own web console, and a
+voice stack that has never heard of cantus. Two firmwares are in the field and they share no
+protocol, so the platform asks the box rather than the installer:
+
+| | V1 (1.0.x) | V2 (1.0.21) |
+|---|---|---|
+| Console | mini_httpd, server-rendered CGI | lighttpd over TLS, GWT single page |
+| Login | `POST /cgi-bin/dologin` with base64 `P2` + `gnkey` | `username`/`password` form fields, `sid` session |
+| State | `/cgi-bin/api-get_*` | `/cgi-bin/api.values.get` with P-numbers |
+| Trap | writes two status lines and leaks its CGI shebang where a header belongs — `fetch`, curl and undici all reject it | a stale `sid` answers `success` with every value empty |
+
+That first trap is why [`apps/server/src/ata/raw.ts`](apps/server/src/ata/raw.ts) speaks HTTP over a
+raw socket and parses forgivingly. Nothing is proxied to the device's own page: the platform reads
+the box and renders what it found.
+
+Enrol a unit the usual way; the address it enrols from is recorded as `addr`, which is where the
+console then reaches it (set it by hand on the device if the box was enrolled through a proxy).
+Set the adaptor's admin password once:
+
+```bash
+TELNO_ATA_PASSWORD=…   # used to open a session, never returned by any endpoint
+```
+
+Open the device in the console and the adaptor panel reports firmware, serial, uptime, each FXS
+port and its SIP account — or exactly which of those the firmware would not surrender. It also
+reports a lockout: five refused passwords cost fifteen minutes of that console, so the client reads
+`api-get_lockouts` first, never retries a password, caches refusals process-wide, and refuses to
+spend the last two attempts. A wrong password is a deployment mistake, not something more requests
+fix. Reboot is offered on V1 only; the V2's restart lives behind a console operation that has not
+been verified, so it says so instead of guessing.
+
+**The voice profile follows the hardware.** A T750 is told `cantus/1`; an HT802 is told `sip`, with
+the edge as its server (`sipEdge` in Settings) and PCMU/PCMA rather than the cantus PCM codec. If no
+edge is configured the note in the document says the adaptor is registering directly against the
+domain on 5060 — the edge is what carries the call onward over cantus, and pretending otherwise
+would hand the box a document it cannot act on.
+
 ### Devices that cannot trust a private CA
 
 Firmware that has no way to install our CA still has to enroll, so a second listener serves
@@ -217,8 +256,8 @@ names both, because an edited `.env` that silently stops applying is a trap.
 ## Checks
 
 ```bash
-npm test --workspace @telno/server      # 28 unit tests: signing, routing documents, CIDR allowlist
-node scripts/smoke.mjs http://127.0.0.1:8791   # 47 end-to-end checks against the control plane
+npm test --workspace @telno/server      # 42 unit tests: signing, routing, CIDR, adaptor wire format
+node scripts/smoke.mjs http://127.0.0.1:8791   # 50 end-to-end checks against the control plane
 npm run typecheck                       # both workspaces
 
 # the same suite through the TLS terminator, which Node only trusts when told to
