@@ -80,7 +80,9 @@ export const api = {
   verifyConfig: (id: string) =>
     post<{ keyId: string; version: number; signatureMatches: boolean }>(`/api/devices/${id}/verify-config`),
   deviceAta: (id: string, refresh = false) =>
-    request<{ adaptor: AdaptorOverview }>(`/api/devices/${id}/ata${refresh ? '?refresh=1' : ''}`),
+    request<{ adaptor: AdaptorOverview; passwordConfigured: boolean }>(
+      `/api/devices/${id}/ata${refresh ? '?refresh=1' : ''}`,
+    ),
   rebootAta: (id: string) =>
     post<{ status: number; accepted: boolean }>(`/api/devices/${id}/ata/reboot`),
 

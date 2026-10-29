@@ -662,12 +662,13 @@ function AdaptorPanel({ device }: { device: Device }) {
   const [confirmReboot, setConfirmReboot] = useState(false);
   const [rebooting, setRebooting] = useState(false);
   const { push } = useToast();
-  const adaptor = useAsync<{ adaptor: AdaptorOverview }>(
+  const adaptor = useAsync<{ adaptor: AdaptorOverview; passwordConfigured: boolean }>(
     () => api.deviceAta(device.id, nonce > 0),
     [device.id, nonce],
   );
 
   const view = adaptor.data?.adaptor ?? null;
+  const passwordConfigured = adaptor.data?.passwordConfigured ?? true;
   const state = view ? ADAPTOR_STATE[view.state] : null;
 
   const reboot = async () => {
@@ -716,6 +717,16 @@ function AdaptorPanel({ device }: { device: Device }) {
         <ErrorBox message={adaptor.error} onRetry={() => setNonce((n) => n + 1)} />
       ) : view ? (
         <div className="stack">
+          {!passwordConfigured ? (
+            <div className="callout warn">
+              <strong>No adaptor password is configured</strong>
+              <span>
+                The platform can reach the box but cannot sign in to it. Set <code>TELNO_ATA_PASSWORD</code> and
+                restart to read its ports and SIP accounts; no login attempt is being spent meanwhile.
+              </span>
+            </div>
+          ) : null}
+
           {view.locked ? (
             <div className="callout warn">
               <strong>Locked out for another {Math.ceil(view.remainSec)}s</strong>
@@ -726,11 +737,15 @@ function AdaptorPanel({ device }: { device: Device }) {
             </div>
           ) : null}
 
-          {view.notes.map((note) => (
-            <div className="callout warn" key={note}>
-              <span>{note}</span>
-            </div>
-          ))}
+          {view.notes
+            // The callout above already explains a missing password; the driver
+            // says the same thing in its own words.
+            .filter((note) => passwordConfigured || !/no admin password is configured/i.test(note))
+            .map((note) => (
+              <div className="callout warn" key={note}>
+                <span>{note}</span>
+              </div>
+            ))}
 
           <div className="grid cols-2">
             <div className="stack small">
@@ -755,6 +770,14 @@ function AdaptorPanel({ device }: { device: Device }) {
               <div className="row">
                 <span className="muted">IP</span>
                 <span className="spacer mono">{view.identity?.ip ?? view.target.host}</span>
+              </div>
+              <div className="row">
+                <span className="muted">Voice image</span>
+                <span className="spacer mono">{view.system?.voiceImage ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="muted">SIP profile</span>
+                <span className="spacer">{view.sip ? (view.sip.exists ? 'present' : 'none') : '—'}</span>
               </div>
               <div className="row">
                 <span className="muted">Checked</span>

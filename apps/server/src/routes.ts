@@ -930,14 +930,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       );
       return null;
     }
-    if (!env.ataPassword) {
-      bad(
-        reply,
-        'TELNO_ATA_PASSWORD is not configured, so the platform cannot sign in to the adaptor. Set it and restart.',
-        409,
-      );
-      return null;
-    }
+    // A missing password is not a reason to refuse to look: three of the box's
+    // endpoints answer without a session, and "it is alive, unlocked, and has
+    // no SIP profile" is what an operator needs while fixing the credential.
+    // No login attempt is sent without one, so this costs no lockout budget.
     return { host: row.addr };
   };
 
@@ -948,7 +944,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!target) return null;
     const query = req.query as { refresh?: string };
     const view = await probeAdaptor(target, { refresh: query.refresh === '1' });
-    return { adaptor: view };
+    return { adaptor: view, passwordConfigured: Boolean(env.ataPassword) };
   });
 
   app.post('/api/devices/:id/ata/reboot', async (req, reply) => {
@@ -956,6 +952,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const target = adaptorTarget(id, reply);
     if (!target) return null;
+    // A reboot is the one action that needs the session, so say why plainly.
+    if (!env.ataPassword) {
+      return bad(reply, 'TELNO_ATA_PASSWORD is not configured, so the platform cannot sign in to reboot this adaptor.', 409);
+    }
     try {
       const result = await rebootAdaptor(target);
       recordEvent('device', 'warn', `Adaptor at ${target.host} was told to reboot.`, { deviceId: id });
