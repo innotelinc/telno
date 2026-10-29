@@ -122,3 +122,28 @@ same back-off, both firmwares.
   `remainSec` set from the platform's own timer, and says plainly that it is the
   platform withholding the password — the unit's timer is not readable, so
   presenting it as the device's would be a guess dressed as a measurement.
+
+## The ledger keeps what it replaced
+
+A write returns `previous` — the line's identity as read with the same session
+that overwrote it — and the event carries it in both the message and the meta:
+
+```
+Adaptor line 2 at 192.168.1.5 was changed from 8579901777 to 201 and read back as 201.
+{ account: 2, from: '8579901777', fromAuthId: '8579901777',
+  fromName: 'Denovo Credit Corp', fromRegistration: 'registered',
+  readableBefore: true, to: '201' }
+```
+
+Three outcomes are distinguished rather than collapsed into one sentence:
+
+- `was changed from X to Y` — the line held something else, and the ledger names it.
+- `was rewritten as Y, unchanged` — the write was a no-op on identity.
+- `could not be read beforehand` — the unit answered with blanks (a stale session);
+  recorded as unknown, never as "an empty slot".
+
+That last case is the reason `previous` is nullable. A stale session on this
+firmware answers `success` with empty strings, so "nothing was there" and "the
+read failed" look identical unless the driver asks for a canary field, which
+`accountState()` does. Recording a failed read as an empty slot would turn the
+one query an audit exists to answer into a confident wrong answer.

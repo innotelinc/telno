@@ -11,6 +11,7 @@ import {
 import {
   emptyOverview,
   type AtaAccount,
+  type AtaAccountState,
   type AtaAccountWrite,
   type AtaOverview,
   type AtaPort,
@@ -555,6 +556,12 @@ export class AtaV2 {
 
     if (!this.sid) await this.login();
 
+    // Read the slot before touching it, with the session that is about to
+    // overwrite it. An audit entry that cannot say what it replaced is a
+    // notification, not a record — and this is the one write that can silently
+    // retire a working line.
+    const before = await this.accountState(index);
+
     const fields: Array<[string, string]> = [
       [accountSlot(ACCOUNT_BLOCK.user, index), id],
       [accountSlot(ACCOUNT_BLOCK.authId, index), String(authId ?? id).trim() || id],
@@ -571,35 +578,54 @@ export class AtaV2 {
     // A write is acknowledged before it is applied, so give the config a moment
     // and then read the numbers back rather than trusting the acknowledgement.
     await new Promise((resolve) => setTimeout(resolve, 1200));
-    const keys = [
+    const after = await this.accountState(index);
+
+    const wantedAuth = String(authId ?? id).trim() || id;
+    const applied = after !== null && after.user === id && after.authId === wantedAuth;
+    return {
+      account: index + 1,
+      applied,
+      user: after?.user ?? null,
+      authId: after?.authId ?? null,
+      name: after?.name ?? null,
+      registration: after?.registration ?? 'not reported',
+      previous: before,
+      note: applied
+        ? 'The unit holds the new identity. It re-registers on its own; no reboot is needed.'
+        : after === null
+          ? 'The device acknowledged the write but would not read it back, so it is not being reported as applied.'
+          : 'The device acknowledged the write but did not store it. Its configuration is likely locked by provisioning.',
+    };
+  }
+
+  /**
+   * What one account slot holds, as the unit answers right now.
+   *
+   * The identity fields are requested alongside the account keys on purpose:
+   * `values()` uses them as the canary for a stale session, which answers
+   * `success` with blanks. Without them an empty slot and a dead session are
+   * indistinguishable, and the audit would record "empty" for a line it never
+   * managed to read.
+   */
+  private async accountState(index: number): Promise<AtaAccountState | null> {
+    const { values, stale } = await this.values([
+      ...IDENTITY_FIELDS,
       accountSlot(ACCOUNT_BLOCK.user, index),
       accountSlot(ACCOUNT_BLOCK.authId, index),
       accountSlot(ACCOUNT_BLOCK.name, index),
       `P${ACCOUNT_STATUS + index}`,
-    ];
-    const { values } = await this.values([...IDENTITY_FIELDS, ...keys]);
+    ]);
+    if (stale) return null;
     const read = (key: string): string | null => {
       const text = String(values[key] ?? '').trim();
       return text === '' ? null : text;
     };
-
-    const wantedAuth = String(authId ?? id).trim() || id;
-    const applied =
-      read(accountSlot(ACCOUNT_BLOCK.user, index)) === id &&
-      read(accountSlot(ACCOUNT_BLOCK.authId, index)) === wantedAuth;
+    const code = read(`P${ACCOUNT_STATUS + index}`);
     return {
-      account: index + 1,
-      applied,
       user: read(accountSlot(ACCOUNT_BLOCK.user, index)),
       authId: read(accountSlot(ACCOUNT_BLOCK.authId, index)),
       name: read(accountSlot(ACCOUNT_BLOCK.name, index)),
-      registration: (() => {
-        const code = read(`P${ACCOUNT_STATUS + index}`);
-        return (code ? STATUS_TEXT[code] : null) ?? 'not registered';
-      })(),
-      note: applied
-        ? 'The unit holds the new identity. It re-registers on its own; no reboot is needed.'
-        : 'The device acknowledged the write but did not store it. Its configuration is likely locked by provisioning.',
+      registration: (code ? STATUS_TEXT[code] : null) ?? 'not registered',
     };
   }
 

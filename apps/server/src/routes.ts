@@ -990,11 +990,30 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         secret: str(body.secret) || undefined,
         name: typeof body.name === 'string' ? body.name : undefined,
       });
+      // The ledger has to survive being asked "what was on that line before?" —
+      // overwriting a live identity is exactly the mistake this will be read for
+      // afterwards, and "was set to 202" alone cannot answer it.
+      const was = result.previous;
+      const summary =
+        was === null
+          ? `was set to ${user} (the line could not be read beforehand)`
+          : was.user === result.user
+            ? `was rewritten as ${user}, unchanged,`
+            : `was changed from ${was.user ?? 'an empty slot'} to ${user}`;
       recordEvent(
         'device',
         result.applied ? 'info' : 'warn',
-        `Adaptor line ${result.account} at ${target.host} was set to ${user} and read back as ${result.user ?? 'empty'}.`,
-        { deviceId: id },
+        `Adaptor line ${result.account} at ${target.host} ${summary} and read back as ${result.user ?? 'empty'}.`,
+        {
+          deviceId: id,
+          account: result.account,
+          from: was?.user ?? null,
+          fromAuthId: was?.authId ?? null,
+          fromName: was?.name ?? null,
+          fromRegistration: was?.registration ?? null,
+          readableBefore: was !== null,
+          to: result.user,
+        },
       );
       return result;
     } catch (err: unknown) {

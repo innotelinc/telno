@@ -294,6 +294,14 @@ export interface AdaptorAccount {
   registered?: boolean | null;
 }
 
+/** The SIP identity one line holds, as the unit reports it. */
+export interface AdaptorAccountState {
+  user: string | null;
+  authId: string | null;
+  name: string | null;
+  registration: string;
+}
+
 /** What a write to one line reports: what the unit holds now, not what was asked for. */
 export interface AdaptorAccountWrite {
   account: number;
@@ -302,6 +310,12 @@ export interface AdaptorAccountWrite {
   authId: string | null;
   name: string | null;
   registration: string;
+  /**
+   * What the line held before the write, read with the same session that
+   * replaced it. Null when the unit would not say — which is not the same as an
+   * empty slot, and must not be recorded as one.
+   */
+  previous: AdaptorAccountState | null;
   note: string;
 }
 

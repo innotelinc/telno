@@ -1,5 +1,6 @@
 import type {
   AdaptorAccount,
+  AdaptorAccountState,
   AdaptorAccountWrite,
   AdaptorIdentity,
   AdaptorLock,
@@ -15,6 +16,7 @@ import type {
  * without a second definition that could drift.
  */
 export type AtaAccount = AdaptorAccount;
+export type AtaAccountState = AdaptorAccountState;
 export type AtaAccountWrite = AdaptorAccountWrite;
 export type AtaIdentity = AdaptorIdentity;
 export type AtaLock = AdaptorLock;
