@@ -789,6 +789,7 @@ function AdaptorPanel({ device }: { device: Device }) {
           </div>
 
           {view.ports.length > 0 ? (
+            <>
             <div className="table-wrap">
               <table>
                 <thead>
@@ -804,13 +805,25 @@ function AdaptorPanel({ device }: { device: Device }) {
                     <tr key={port.port}>
                       <td className="mono">{port.port}</td>
                       <td className="small">{port.hook ?? '—'}</td>
-                      <td className="small">{port.registration ?? '—'}</td>
+                      <td className="small">
+                        {port.registration === 'configured'
+                          ? `holds extension ${port.sipUser ?? ''}`.trim()
+                          : port.registration === 'disabled'
+                            ? 'port switched off'
+                            : port.registration ?? '—'}
+                      </td>
                       <td className="mono small">{port.sipUser ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            <div className="row small muted">
+              <span>
+                This firmware reports configuration, not live registration, so a port that holds a line reads the same whether or not the switch accepted it. Confirm the line came up at the switch.
+              </span>
+            </div>
+            </>
           ) : (
             <div className="row small muted">
               <span>This firmware reported no FXS port state.</span>
