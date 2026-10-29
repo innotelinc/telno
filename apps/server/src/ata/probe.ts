@@ -1,5 +1,7 @@
+import { adaptorRefusal, clearAdaptorRefusal, rememberAdaptorRefusal } from '../db.js';
 import { env } from '../env.js';
 import { AtaDevice } from './device.js';
+import type { RefusalGuard } from './ht802.js';
 import type { AtaOverview } from './types.js';
 
 /**
@@ -12,6 +14,20 @@ const CACHE_MS = 20_000;
 const cache = new Map<string, { at: number; view: AtaOverview }>();
 
 const keyFor = (host: string, port: number): string => `${host}:${port}`;
+
+/**
+ * Refusals live in the database, not in this process.
+ *
+ * Five refused passwords cost fifteen minutes of the adaptor's console, and the
+ * cost is paid by whoever owns the box — so the count must survive a restart or
+ * a second process opening its own connection. In-memory state would let each
+ * new process start from zero and spend the last attempts again.
+ */
+const refusalGuard: RefusalGuard = {
+  get: (host) => adaptorRefusal(host),
+  set: (host, value) => rememberAdaptorRefusal(host, value.at, value.count, value.key),
+  clear: (host) => clearAdaptorRefusal(host),
+};
 
 export interface AdaptorTarget {
   host: string;
@@ -42,6 +58,7 @@ export async function probeAdaptor(
     username: target.username ?? env.ataUser,
     password: target.password ?? env.ataPassword,
     timeoutMs: env.ataTimeoutMs,
+    guard: refusalGuard,
   }).overview({ refresh });
 
   cache.set(key, { at: Date.now(), view });
@@ -59,6 +76,7 @@ export async function rebootAdaptor(
     username: target.username ?? env.ataUser,
     password: target.password ?? env.ataPassword,
     timeoutMs: env.ataTimeoutMs,
+    guard: refusalGuard,
   }).reboot();
   forgetAdaptor(target.host, port);
   return result;

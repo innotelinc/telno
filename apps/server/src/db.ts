@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
   created_at TEXT NOT NULL
 );
 
+/*
+ * Refused adaptor passwords. Persisted rather than held in memory: a restart
+ * (or anything else that opens its own connection) must not be able to resume
+ * spending login attempts on a box that counts them.
+ */
+CREATE TABLE IF NOT EXISTS ata_auth_failures (
+  host TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  /* Digest of the credential that was refused: a corrected password is allowed one try. */
+  key TEXT
+);
+
 CREATE TABLE IF NOT EXISTS routing_revisions (
   revision INTEGER PRIMARY KEY,
   document TEXT NOT NULL,
@@ -118,6 +131,39 @@ CREATE TABLE IF NOT EXISTS routing_revisions (
   if (!columns.some((column) => column.name === 'addr')) {
     db.exec('ALTER TABLE devices ADD COLUMN addr TEXT');
   }
+  const refusalColumns = db.prepare('PRAGMA table_info(ata_auth_failures)').all() as Array<{ name: string }>;
+  if (!refusalColumns.some((column) => column.name === 'key')) {
+    db.exec('ALTER TABLE ata_auth_failures ADD COLUMN key TEXT');
+  }
+}
+
+/** Remembered refusals for one adaptor, or undefined when it is not cooling down. */
+export function adaptorRefusal(
+  host: string,
+): { at: number; count: number; key?: string } | undefined {
+  const row = db.prepare('SELECT at, count, key FROM ata_auth_failures WHERE host = ?').get(host) as
+    | { at: string; count: number; key: string | null }
+    | undefined;
+  if (!row) return undefined;
+  const at = Date.parse(row.at);
+  if (!Number.isFinite(at)) return undefined;
+  return row.key ? { at, count: row.count, key: row.key } : { at, count: row.count };
+}
+
+export function rememberAdaptorRefusal(
+  host: string,
+  at: number,
+  count: number,
+  key?: string,
+): void {
+  db.prepare(
+    `INSERT INTO ata_auth_failures (host, at, count, key) VALUES (?,?,?,?)
+     ON CONFLICT(host) DO UPDATE SET at = excluded.at, count = excluded.count, key = excluded.key`,
+  ).run(host, new Date(at).toISOString(), count, key ?? null);
+}
+
+export function clearAdaptorRefusal(host: string): void {
+  db.prepare('DELETE FROM ata_auth_failures WHERE host = ?').run(host);
 }
 
 export const now = (): string => new Date().toISOString();

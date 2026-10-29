@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { parseResponse, cookiesFrom } from '../src/ata/raw.js';
-import { decodeEntities, formFields, Ht802, labelValuePairs, pick } from '../src/ata/ht802.js';
+import {
+  credentialKey,
+  decodeEntities,
+  formFields,
+  Ht802,
+  labelValuePairs,
+  pick,
+} from '../src/ata/ht802.js';
 import { voiceProfileFor } from '../src/voice.js';
 
 /**
@@ -115,7 +122,7 @@ describe('voice profile per model', () => {
  * clients: a doubled status line and a CGI shebang where a header belongs.
  * This is what makes the login handshake testable without hardware.
  */
-function fakeHt802(password: string) {
+function fakeHt802(password: string, remaining = 4) {
   const requests: string[] = [];
   const server = createServer((socket) => {
     let buffer = '';
@@ -149,7 +156,7 @@ function fakeHt802(password: string) {
         const ok = Buffer.from(p2, 'base64').toString('utf8') === password;
         return ok
           ? send('HTTP/1.0 200 OK\r\nSet-Cookie: session_id=deadbeef; Path=/\r\n\r\n{"ok":1}')
-          : send('HTTP/1.0 200 OK\r\n\r\nRemaining Attempts: 2');
+          : send(`HTTP/1.0 200 OK\r\n\r\nRemaining Attempts: ${remaining}`);
       }
       if (path === '/cgi-bin/api-get_system_status') {
         return send('HTTP/1.0 200 OK\r\n\r\n{"results":[{"vsz":"16480","command":"ata"}]}');
@@ -207,7 +214,112 @@ describe('HT802 session against a fake device', () => {
       const view = await device.overview();
       expect(view.authenticated).toBe(false);
       expect(view.state).toBe('auth');
-      expect(view.notes.join(' ')).toMatch(/2 attempts left/);
+      expect(view.notes.join(' ')).toMatch(/4 attempts left/);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('refused passwords are not retried', () => {
+  const guardFor = () => {
+    const rows = new Map<string, { at: number; count: number; key?: string }>();
+    return {
+      rows,
+      get: (host: string) => rows.get(host),
+      set: (host: string, value: { at: number; count: number; key?: string }) => {
+        rows.set(host, value);
+      },
+      clear: (host: string) => {
+        rows.delete(host);
+      },
+    };
+  };
+
+  it('records which credential was refused', async () => {
+    const { server } = fakeHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const guard = guardFor();
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 'wrong', timeoutMs: 2000, guard });
+      await device.overview();
+      const stored = guard.rows.get(`127.0.0.1:${port}`);
+      expect(stored?.count).toBe(1);
+      expect(stored?.key).toBe(credentialKey('wrong'));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('stops entirely once the device says only two attempts remain', async () => {
+    const { server } = fakeHt802('s3cret', 2);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const guard = guardFor();
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 'wrong', timeoutMs: 2000, guard });
+      await device.overview();
+      // One more refusal would cost fifteen minutes of that console, so the
+      // remaining attempts belong to a human, not to a retry loop.
+      expect(guard.rows.get(`127.0.0.1:${port}`)?.count).toBe(3);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('never counts a missing password as a refusal', async () => {
+    const { server, requests } = fakeHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const guard = guardFor();
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: '', timeoutMs: 2000, guard });
+      const view = await device.overview();
+      // Reachable but unsignable: no credential, so nothing was rejected.
+      expect(view.state).toBe('reachable');
+      expect(guard.rows.size).toBe(0);
+      expect(requests).not.toContain('POST /cgi-bin/dologin');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('sends no password while that same credential is cooling down', async () => {
+    const { server, requests } = fakeHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const guard = guardFor();
+    guard.set(`127.0.0.1:${port}`, { at: Date.now(), count: 1, key: credentialKey('wrong') });
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 'wrong', timeoutMs: 2000, guard });
+      const view = await device.overview();
+      expect(view.authenticated).toBe(false);
+      expect(view.notes.join(' ')).toMatch(/counting failed attempts/);
+      expect(requests).not.toContain('POST /cgi-bin/dologin');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('lets a corrected password through, even after attempts were exhausted', async () => {
+    const { server, requests } = fakeHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const guard = guardFor();
+    // Three refused cycles would normally stop every further attempt.
+    guard.set(`127.0.0.1:${port}`, { at: Date.now(), count: 3, key: credentialKey('outdated') });
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000, guard });
+      const view = await device.overview();
+      expect(view.authenticated).toBe(true);
+      expect(requests).toContain('POST /cgi-bin/dologin');
+      expect(guard.rows.get(`127.0.0.1:${port}`)).toBeUndefined();
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

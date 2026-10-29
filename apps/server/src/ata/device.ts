@@ -1,4 +1,4 @@
-import { Ht802 } from './ht802.js';
+import { Ht802, memoryGuard, type RefusalGuard } from './ht802.js';
 import { AtaV2 } from './v2.js';
 import type { AtaFirmware, AtaOverview } from './types.js';
 
@@ -32,6 +32,8 @@ export interface AtaDeviceOptions {
   username?: string;
   password?: string;
   timeoutMs?: number;
+  /** Durable store for refused passwords; the server passes a database-backed one. */
+  guard?: RefusalGuard;
 }
 
 export class AtaDevice {
@@ -40,17 +42,26 @@ export class AtaDevice {
   readonly username: string;
   readonly password: string;
   readonly timeoutMs: number;
+  private readonly guard: RefusalGuard;
   private impl: Ht802 | AtaV2 | null = null;
   private firmware: AtaFirmware | null = null;
   private detecting: Promise<Ht802 | AtaV2> | null = null;
 
-  constructor({ host, port = 80, username = 'admin', password = '', timeoutMs = 6000 }: AtaDeviceOptions) {
+  constructor({
+    host,
+    port = 80,
+    username = 'admin',
+    password = '',
+    timeoutMs = 6000,
+    guard = memoryGuard,
+  }: AtaDeviceOptions) {
     if (!host) throw new Error('An ATA needs a host address');
     this.host = host;
     this.port = Number(port) || 80;
     this.username = username;
     this.password = password;
     this.timeoutMs = timeoutMs;
+    this.guard = guard;
   }
 
   /** V2 first: it is the only one that speaks TLS on 443. */
@@ -83,6 +94,7 @@ export class AtaDevice {
           username: this.username,
           password: this.password,
           timeoutMs: this.timeoutMs,
+          guard: this.guard,
         });
         this.firmware = 'v1';
       }

@@ -159,6 +159,12 @@ Set the adaptor's admin password once:
 TELNO_ATA_PASSWORD=…   # used to open a session, never returned by any endpoint
 ```
 
+Refusals are kept in the database, not in process memory, and are keyed to the credential that was
+refused. That matters because the cost is paid by whoever owns the hardware: a restart, or any
+second process opening its own connection, would otherwise start from zero and spend the adaptor's
+remaining attempts again. A *corrected* password is still allowed one try; the same wrong one never
+is. A missing password is not a refusal and is never counted as one.
+
 Open the device in the console and the adaptor panel reports firmware, serial, uptime, each FXS
 port and its SIP account — or exactly which of those the firmware would not surrender. It also
 reports a lockout: five refused passwords cost fifteen minutes of that console, so the client reads

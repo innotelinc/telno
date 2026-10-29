@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { cookiesFrom, request as rawRequest, type RawResponse } from './raw.js';
 import {
   emptyOverview,
@@ -53,8 +54,8 @@ export class AtaLockedError extends Error {
 
 /** The password was refused, or the session it produced was not accepted. */
 export class AtaAuthError extends Error {
-  override readonly name = 'AtaAuthError';
-  readonly code = 'ata_auth';
+  override readonly name: string = 'AtaAuthError';
+  readonly code: string = 'ata_auth';
   /** Attempts left before the firmware's lockout, when the page says. */
   remaining?: number;
   /** Set on errors that stand in for a cooldown, so a cooldown never re-arms itself. */
@@ -62,6 +63,21 @@ export class AtaAuthError extends Error {
 
   constructor(message = 'The device refused the admin password') {
     super(message);
+  }
+}
+
+/**
+ * No credential is configured at all.
+ *
+ * Deliberately not a refusal: nothing was rejected, so nothing may be counted
+ * against the device's attempt budget or remembered as a failed password.
+ */
+export class AtaUnconfiguredError extends AtaAuthError {
+  override readonly name = 'AtaUnconfiguredError';
+  override readonly code = 'ata_unconfigured';
+
+  constructor() {
+    super('No admin password is configured for this device');
   }
 }
 
@@ -97,11 +113,35 @@ export const ATA_PAGES = [
 const AUTH_COOLDOWN_MS = 5 * 60 * 1000;
 /** Each further refusal waits longer, and the third stops the attempts entirely. */
 const AUTH_BACKOFF = [5 * 60 * 1000, 15 * 60 * 1000] as const;
-const authFailures = new Map<string, { at: number; count: number }>();
 
-const rememberRefusal = (label: string) => {
-  const previous = authFailures.get(label);
-  authFailures.set(label, { at: Date.now(), count: (previous?.count ?? 0) + 1 });
+/**
+ * Where refused passwords are remembered.
+ *
+ * The default is process memory, which is enough for a single long-lived
+ * server but not enough in general: a restart, or a second process opening its
+ * own connection, would start with an empty map and happily spend the device's
+ * remaining attempts. The control plane therefore injects a durable store.
+ */
+export interface RefusalGuard {
+  get(host: string): { at: number; count: number; key?: string } | undefined;
+  set(host: string, value: { at: number; count: number; key?: string }): void;
+  clear(host: string): void;
+}
+
+/** Which credential was refused, so a corrected password is not blocked by the old one. */
+export const credentialKey = (password: string): string =>
+  createHash('sha256').update(password).digest('hex').slice(0, 16);
+
+const memoryFailures = new Map<string, { at: number; count: number; key?: string }>();
+
+export const memoryGuard: RefusalGuard = {
+  get: (host) => memoryFailures.get(host),
+  set: (host, value) => {
+    memoryFailures.set(host, value);
+  },
+  clear: (host) => {
+    memoryFailures.delete(host);
+  },
 };
 
 const ENTITIES: Record<string, string> = {
@@ -203,6 +243,7 @@ export interface Ht802Options {
   password?: string;
   timeoutMs?: number;
   transport?: Transport;
+  guard?: RefusalGuard;
 }
 
 /** Shape of the session-less JSON endpoints, which wrap one row in `results`. */
@@ -234,6 +275,7 @@ export class Ht802 {
   readonly password: string;
   readonly timeoutMs: number;
   private readonly transport: Transport;
+  private readonly guard: RefusalGuard;
   private cookie = '';
   private sessionPromise: Promise<{ ok: true; reused: boolean }> | null = null;
 
@@ -244,6 +286,7 @@ export class Ht802 {
     username = 'admin',
     timeoutMs = 6000,
     transport = rawRequest,
+    guard = memoryGuard,
   }: Ht802Options) {
     if (!host) throw new Error('An ATA needs a host address');
     this.host = host;
@@ -252,6 +295,7 @@ export class Ht802 {
     this.password = password || '';
     this.timeoutMs = timeoutMs;
     this.transport = transport;
+    this.guard = guard;
   }
 
   get label(): string {
@@ -333,15 +377,21 @@ export class Ht802 {
     if (this.sessionPromise) return this.sessionPromise;
     this.sessionPromise = this.#login()
       .catch((err: unknown) => {
-        if (err instanceof AtaAuthError && !err.cooldown) {
+        // Only a rejected credential counts. A missing one is a deployment
+        // state, and recording it would consume the device's budget and (worse)
+        // overwrite the digest that identifies the credential actually refused.
+        if (err instanceof AtaAuthError && err.code === 'ata_auth' && !err.cooldown) {
           // The device counts down in the page text. Once two attempts are left
           // they belong to a human: gambling them locks the hardware for
           // fifteen minutes, and a wrong credential is a deployment problem, not
           // something more requests can fix.
+          const key = credentialKey(this.password);
           if (typeof err.remaining === 'number' && err.remaining <= 2) {
-            authFailures.set(this.label, { at: Date.now(), count: AUTH_BACKOFF.length + 1 });
+            // Out of budget: stop until someone corrects the credential.
+            this.guard.set(this.label, { at: Date.now(), count: AUTH_BACKOFF.length + 1, key });
           } else {
-            rememberRefusal(this.label);
+            const previous = this.guard.get(this.label);
+            this.guard.set(this.label, { at: Date.now(), count: (previous?.count ?? 0) + 1, key });
           }
         }
         throw err;
@@ -366,9 +416,17 @@ export class Ht802 {
    * console, so this makes at most two attempts per call and never loops.
    */
   async #login(): Promise<{ ok: true; reused: boolean }> {
-    if (!this.password) throw new AtaAuthError('No admin password is configured for this device');
+    if (!this.password) throw new AtaUnconfiguredError();
 
-    const refusal = authFailures.get(this.label);
+    // A different password means someone corrected the deployment: that earns
+    // one attempt, and the old refusal must not block it.
+    const key = credentialKey(this.password);
+    let refusal = this.guard.get(this.label);
+    if (refusal?.key && refusal.key !== key) {
+      this.guard.clear(this.label);
+      refusal = undefined;
+    }
+
     if (refusal && refusal.count > AUTH_BACKOFF.length) {
       // Three refused cycles is not a transient problem, it is a wrong
       // credential. Attempting again would only lock the hardware in a loop, so
@@ -447,7 +505,7 @@ export class Ht802 {
     }
 
     this.cookie = session;
-    authFailures.delete(this.label);
+    this.guard.clear(this.label);
     return { ok: true, reused: false };
   }
 
@@ -557,7 +615,14 @@ export class Ht802 {
       view.state = 'online';
     } catch (err: unknown) {
       const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : '';
-      view.state = code === 'ata_locked' ? 'locked' : code === 'ata_auth' ? 'auth' : 'unreachable';
+      view.state =
+        code === 'ata_locked'
+          ? 'locked'
+          : code === 'ata_auth'
+            ? 'auth'
+            : code === 'ata_unconfigured'
+              ? 'reachable'
+              : 'unreachable';
       if (err instanceof AtaLockedError) {
         view.locked = true;
         view.remainSec = err.remainSec;
