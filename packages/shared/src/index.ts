@@ -264,8 +264,18 @@ export interface AdaptorPort {
   port: number;
   enabled: boolean | null;
   hook: string | null;
-  /** Configuration state as the device reports it, never a claim of registration. */
+  /**
+   * State as the device reports it. The V1 console shows configuration only, so
+   * its value is "configured"; the V2 API reports live registration per account
+   * and says "registered" or "not registered".
+   */
   registration: string | null;
+  /**
+   * True only when the firmware itself reports a live registration. Absent or
+   * null on a V1, where registration is not observable at all — never inferred
+   * from a configured user id.
+   */
+  registered?: boolean | null;
   sipUser: string | null;
 }
 
@@ -273,9 +283,26 @@ export interface AdaptorAccount {
   port: number;
   server: string | null;
   user: string | null;
+  /** Authenticate id, when the firmware reports it separately from the user id. */
+  authId?: string | null;
   name: string | null;
   active: string | null;
   localPort: string | null;
+  /** SIP profile index the line is bound to, one-based. */
+  profileId?: string | null;
+  registration?: string | null;
+  registered?: boolean | null;
+}
+
+/** What a write to one line reports: what the unit holds now, not what was asked for. */
+export interface AdaptorAccountWrite {
+  account: number;
+  applied: boolean;
+  user: string | null;
+  authId: string | null;
+  name: string | null;
+  registration: string;
+  note: string;
 }
 
 export interface AdaptorNetwork {

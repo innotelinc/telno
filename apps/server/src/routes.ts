@@ -3,7 +3,7 @@ import type { DeviceConfig, ModelKey, RoutingMode } from '@telno/shared';
 import { DEVICE_MODELS, isModelKey } from '@telno/shared';
 import { AtaUnsupported } from './ata/device.js';
 import { env } from './env.js';
-import { forgetAdaptor, probeAdaptor, rebootAdaptor } from './ata/probe.js';
+import { forgetAdaptor, probeAdaptor, rebootAdaptor, setAdaptorAccount } from './ata/probe.js';
 import {
   db,
   hashPassword,
@@ -945,6 +945,63 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const query = req.query as { refresh?: string };
     const view = await probeAdaptor(target, { refresh: query.refresh === '1' });
     return { adaptor: view, passwordConfigured: Boolean(env.ataPassword) };
+  });
+
+  /*
+   * Put an extension on one of the unit's lines, or replace the one it holds.
+   *
+   * This is the write the console could not do before: the account fields it was
+   * aiming at (`account.1.sip.user_id`) are read-only projections, so every write
+   * was acknowledged and dropped. The driver now writes the parameters the unit
+   * actually registers from and reports what it read back — never just that the
+   * device said `right`.
+   *
+   * The secret is taken from the request and written to the box; it is never
+   * echoed, logged or stored by the platform.
+   */
+  app.post('/api/devices/:id/ata/accounts', async (req, reply) => {
+    if (!requireSession(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const target = adaptorTarget(id, reply);
+    if (!target) return null;
+    if (!env.ataPassword) {
+      return bad(
+        reply,
+        'TELNO_ATA_PASSWORD is not configured, so the platform cannot sign in to set this line.',
+        409,
+      );
+    }
+
+    const body = (req.body ?? {}) as Body;
+    const account = Number(body.account ?? 1);
+    // An extension is a digit string, but a console form may well send it as a
+    // number; both mean the same thing here.
+    const raw = body.extension ?? body.user;
+    const user = typeof raw === 'number' ? String(raw) : str(raw).trim();
+    if (!user) {
+      return bad(reply, 'an extension is required: it is the SIP user id the line registers as', 400);
+    }
+
+    try {
+      const result = await setAdaptorAccount(target, {
+        account,
+        user,
+        authId: str(body.authId) || undefined,
+        secret: str(body.secret) || undefined,
+        name: typeof body.name === 'string' ? body.name : undefined,
+      });
+      recordEvent(
+        'device',
+        result.applied ? 'info' : 'warn',
+        `Adaptor line ${result.account} at ${target.host} was set to ${user} and read back as ${result.user ?? 'empty'}.`,
+        { deviceId: id },
+      );
+      return result;
+    } catch (err: unknown) {
+      if (err instanceof AtaUnsupported) return bad(reply, err.message, 409);
+      forgetAdaptor(target.host);
+      return bad(reply, err instanceof Error ? err.message : 'the adaptor did not accept the write', 502);
+    }
   });
 
   app.post('/api/devices/:id/ata/reboot', async (req, reply) => {

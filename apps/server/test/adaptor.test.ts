@@ -10,6 +10,7 @@ import {
   labelValuePairs,
   pick,
 } from '../src/ata/ht802.js';
+import { ACCOUNT_BLOCK, ACCOUNT_SLOTS, AtaV2, accountFields, accountSlot } from '../src/ata/v2.js';
 import { voiceProfileFor } from '../src/voice.js';
 
 /**
@@ -204,12 +205,12 @@ function fakeHt802(password: string, remaining = 4, legacy = false) {
 
 describe('HT802 session against a fake device', () => {
   it('signs in with the base64 P2 form and reports what it read', async () => {
-    const { server, requests } = fakeHt802('s3cret');
+    const { server, requests } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
       const view = await device.overview();
 
       expect(view.state).toBe('online');
@@ -225,12 +226,12 @@ describe('HT802 session against a fake device', () => {
   });
 
   it('sends the username and per-page token the 1.0.x console asks for', async () => {
-    const { server, bodies } = fakeHt802('s3cret');
+    const { server, bodies } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
       expect((await device.overview()).authenticated).toBe(true);
       const login = bodies.find((body) => body.includes('P2=')) ?? '';
       // Posting only P2 + gnkey is rejected as a wrong password on this
@@ -243,12 +244,12 @@ describe('HT802 session against a fake device', () => {
   });
 
   it('signs in to the older console that asks for P2 and gnkey alone', async () => {
-    const { server } = fakeHt802('s3cret', 4, true);
+    const { server } = fakeHt802(FIXTURE_PASSWORD, 4, true);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
       expect((await device.overview()).authenticated).toBe(true);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -256,7 +257,7 @@ describe('HT802 session against a fake device', () => {
   });
 
   it('reports a refused password without spending the last attempts', async () => {
-    const { server } = fakeHt802('s3cret');
+    const { server } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
@@ -288,7 +289,7 @@ describe('refused passwords are not retried', () => {
   };
 
   it('records which credential was refused', async () => {
-    const { server } = fakeHt802('s3cret');
+    const { server } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const guard = guardFor();
@@ -305,7 +306,7 @@ describe('refused passwords are not retried', () => {
   });
 
   it('stops entirely once the device says only two attempts remain', async () => {
-    const { server } = fakeHt802('s3cret', 2);
+    const { server } = fakeHt802(FIXTURE_PASSWORD, 2);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const guard = guardFor();
@@ -322,7 +323,7 @@ describe('refused passwords are not retried', () => {
   });
 
   it('never counts a missing password as a refusal', async () => {
-    const { server, requests } = fakeHt802('s3cret');
+    const { server, requests } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const guard = guardFor();
@@ -340,7 +341,7 @@ describe('refused passwords are not retried', () => {
   });
 
   it('sends no password while that same credential is cooling down', async () => {
-    const { server, requests } = fakeHt802('s3cret');
+    const { server, requests } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const guard = guardFor();
@@ -358,7 +359,7 @@ describe('refused passwords are not retried', () => {
   });
 
   it('lets a corrected password through, even after attempts were exhausted', async () => {
-    const { server, requests } = fakeHt802('s3cret');
+    const { server, requests } = fakeHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const guard = guardFor();
@@ -366,7 +367,7 @@ describe('refused passwords are not retried', () => {
     guard.set(`127.0.0.1:${port}`, { at: Date.now(), count: 3, key: credentialKey('outdated') });
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000, guard });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000, guard });
       const view = await device.overview();
       expect(view.authenticated).toBe(true);
       expect(requests).toContain('POST /cgi-bin/dologin');
@@ -459,12 +460,12 @@ function fakeModernHt802(password: string) {
 
 describe('HT802 firmware 1.0.21.4, as measured on the real unit', () => {
   it('reads the MAC row that neighbouring-cell scraping used to drop', async () => {
-    const { server } = fakeModernHt802('s3cret');
+    const { server } = fakeModernHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
       const view = await device.overview();
       expect(view.state).toBe('online');
       expect(view.identity?.serial).toBe('207GHQYM103ED820');
@@ -475,12 +476,12 @@ describe('HT802 firmware 1.0.21.4, as measured on the real unit', () => {
   });
 
   it('reports both FXS ports from their P-values, in the order the console lists them', async () => {
-    const { server } = fakeModernHt802('s3cret');
+    const { server } = fakeModernHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
       const view = await device.overview();
       expect(view.accounts.map((account) => account.port)).toEqual([1, 2]);
       expect(view.accounts[0]).toMatchObject({
@@ -498,12 +499,12 @@ describe('HT802 firmware 1.0.21.4, as measured on the real unit', () => {
   });
 
   it('signs in again when the console answers a page with a bare redirect', async () => {
-    const { server, requests } = fakeModernHt802('s3cret');
+    const { server, requests } = fakeModernHt802(FIXTURE_PASSWORD);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
-      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const device = new Ht802({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
       await device.login();
       // A stale cookie: the next page read is redirected, and the client has to
       // recover rather than silently report a port that does not exist.
@@ -517,3 +518,52 @@ describe('HT802 firmware 1.0.21.4, as measured on the real unit', () => {
     }
   });
 });
+
+/**
+ * The account block is the part that took the longest to get right, because the
+ * firmware accepts writes to the dotted names and silently ignores them. These
+ * tests pin the parameters that were read off the real unit.
+ */
+describe('the account block the TLS firmware writes', () => {
+  it('maps line 1 and line 2 onto the parameter numbers read from the unit', () => {
+    expect(accountSlot(ACCOUNT_BLOCK.user, 0)).toBe('P4060');
+    expect(accountSlot(ACCOUNT_BLOCK.user, 1)).toBe('P4061');
+    expect(accountSlot(ACCOUNT_BLOCK.authId, 0)).toBe('P4090');
+    expect(accountSlot(ACCOUNT_BLOCK.secret, 1)).toBe('P4121');
+    expect(accountSlot(ACCOUNT_BLOCK.name, 0)).toBe('P4180');
+  });
+
+  it('asks for the live registration state of every slot', () => {
+    const fields = accountFields();
+    for (let i = 0; i < ACCOUNT_SLOTS; i += 1) {
+      expect(fields).toContain(`P${4921 + i}`);
+    }
+  });
+
+  it('never asks the device for a password, which it would answer in clear text', () => {
+    const fields = accountFields();
+    for (let i = 0; i < ACCOUNT_SLOTS; i += 1) {
+      expect(fields).not.toContain(`P${4120 + i}`);
+    }
+  });
+
+  it('refuses a line the unit does not have before spending a login attempt', async () => {
+    const device = new AtaV2({ host: '127.0.0.1', password: 'x' });
+    await expect(device.setAccount({ account: ACCOUNT_SLOTS + 1, user: '201' })).rejects.toThrow(/1–10/);
+    await expect(device.setAccount({ account: 0, user: '201' })).rejects.toThrow(/1–10/);
+  });
+
+  it('refuses an empty user id rather than writing a blank identity', async () => {
+    const device = new AtaV2({ host: '127.0.0.1', password: 'x' });
+    await expect(device.setAccount({ account: 1, user: '   ' })).rejects.toThrow(/SIP user id is required/);
+  });
+});
+
+/*
+ * What the fakes answer to and the drivers sign in with. Generated per run
+ * rather than written down: a literal here is a password-shaped string in a
+ * committed file that secret scanning reports on every branch touching this
+ * test, and no test needs it to be a fixed value. Fake and driver read the same
+ * constant, so they still agree on the password.
+ */
+const FIXTURE_PASSWORD = crypto.randomUUID();

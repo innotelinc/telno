@@ -2,7 +2,8 @@ import { adaptorRefusal, clearAdaptorRefusal, rememberAdaptorRefusal } from '../
 import { env } from '../env.js';
 import { AtaDevice } from './device.js';
 import type { RefusalGuard } from './ht802.js';
-import type { AtaOverview } from './types.js';
+import type { AtaAccountWrite, AtaOverview } from './types.js';
+import type { AtaAccountInput } from './v2.js';
 
 /**
  * Probing an adaptor costs several sockets to real hardware, and the console
@@ -63,6 +64,30 @@ export async function probeAdaptor(
 
   cache.set(key, { at: Date.now(), view });
   return { ...view, cached: false };
+}
+
+/**
+ * Set one line's SIP identity, then drop the cached view.
+ *
+ * The cache must go: a write changes what the device reports, and a console that
+ * redrew from a twenty-second-old snapshot would show the old identity and read
+ * as though the write had been ignored.
+ */
+export async function setAdaptorAccount(
+  target: AdaptorTarget,
+  input: AtaAccountInput,
+): Promise<AtaAccountWrite> {
+  const port = target.port ?? 80;
+  const result = await new AtaDevice({
+    host: target.host,
+    port,
+    username: target.username ?? env.ataUser,
+    password: target.password ?? env.ataPassword,
+    timeoutMs: env.ataTimeoutMs,
+    guard: refusalGuard,
+  }).setAccount(input);
+  forgetAdaptor(target.host, port);
+  return result;
 }
 
 /** Reboot, and forget the cached view because the device is going down. */
