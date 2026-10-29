@@ -277,7 +277,11 @@ export default function Device() {
                         ? 'Registered with the switch. A call to this extension rings the telephone on this port.'
                         : port.registration === 'no SIP user'
                           ? 'No extension is configured on this port. Send it a Telno profile from Estate.'
-                          : 'Not registered. Send a Telno profile from Estate, then reboot the adaptor.'}
+                          : port.registration === 'configured'
+                            ? `Holds extension ${port.sipUser} and will register with it. This firmware reports settings, not live registration, so the switch is where to confirm it came up.`
+                            : port.registration === 'disabled'
+                              ? 'The unit has this port switched off, so no extension on it can register.'
+                              : 'Not registered. Send it a Telno profile from Estate, then reboot the adaptor.'}
                     </p>
                   </div>
                 </Card>
