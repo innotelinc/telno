@@ -1,6 +1,6 @@
 import type {
-  AdaptorAccountWrite,
   AdaptorOverview,
+  AdaptorWriteResponse,
   CantusRouteDecision,
   CantusStatus,
   Device,
@@ -89,7 +89,7 @@ export const api = {
   setAtaAccount: (
     id: string,
     body: { account: number; extension: string; authId?: string; name?: string; secret?: string },
-  ) => post<AdaptorAccountWrite>(`/api/devices/${id}/ata/accounts`, body),
+  ) => post<AdaptorWriteResponse>(`/api/devices/${id}/ata/accounts`, body),
 
   lines: () => request<{ lines: Line[] }>('/api/lines'),
   createLine: (body: Record<string, unknown>) => post<{ line: Line }>('/api/lines', body),

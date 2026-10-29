@@ -319,6 +319,19 @@ export interface AdaptorAccountWrite {
   note: string;
 }
 
+/**
+ * What the write route answers with: the driver's report, plus the one thing
+ * only the platform can know — whether any line in the estate answers to the
+ * extension that was just written.
+ *
+ * A warning, not an error. The unit will register the identity either way; the
+ * warning exists because it will then ring nowhere, and "registered" on the
+ * device sheet is otherwise indistinguishable from working.
+ */
+export interface AdaptorWriteResponse extends AdaptorAccountWrite {
+  warning: string | null;
+}
+
 export interface AdaptorNetwork {
   ip: string | null;
   mask: string | null;

@@ -4,6 +4,7 @@ import { DEVICE_MODELS, extensionProblem, isModelKey, normalizeExtension } from 
 import { AtaUnsupported } from './ata/device.js';
 import { env } from './env.js';
 import { forgetAdaptor, probeAdaptor, rebootAdaptor, setAdaptorAccount } from './ata/probe.js';
+import { unknownExtensionWarning } from './estate.js';
 import {
   db,
   hashPassword,
@@ -984,6 +985,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return bad(reply, extensionProblem(raw) ?? 'an extension is required', 400);
     }
 
+    // The box reports a line as registered whether or not anything behind the
+    // switch answers to that number, so the estate is asked before the write and
+    // the operator is told afterwards. Deliberately not a refusal: an operator
+    // may be ahead of the line inventory, and the hardware already holds numbers
+    // the platform learned about later.
+    const warning = unknownExtensionWarning(db, user);
+
     try {
       const result = await setAdaptorAccount(target, {
         account,
@@ -1004,8 +1012,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
             : `was changed from ${was.user ?? 'an empty slot'} to ${user}`;
       recordEvent(
         'device',
-        result.applied ? 'info' : 'warn',
-        `Adaptor line ${result.account} at ${target.host} ${summary} and read back as ${result.user ?? 'empty'}.`,
+        result.applied && !warning ? 'info' : 'warn',
+        `Adaptor line ${result.account} at ${target.host} ${summary} and read back as ${result.user ?? 'empty'}.${warning ? ` ${warning}` : ''}`,
         {
           deviceId: id,
           account: result.account,
@@ -1014,10 +1022,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           fromName: was?.name ?? null,
           fromRegistration: was?.registration ?? null,
           readableBefore: was !== null,
+          unknownExtension: Boolean(warning),
           to: result.user,
         },
       );
-      return result;
+      return { ...result, warning };
     } catch (err: unknown) {
       if (err instanceof AtaUnsupported) return bad(reply, err.message, 409);
       forgetAdaptor(target.host);

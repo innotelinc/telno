@@ -989,6 +989,9 @@ function LineEditor({
           : `The box acknowledged the write but still reads back ${result.user ?? 'an empty user'} — ${result.note}`,
         result.applied ? 'ok' : 'err',
       );
+      // Registered is not the same as ringing: the unit will hold an identity the
+      // estate has no line for, and say nothing about it.
+      if (result.warning) push(result.warning, 'warn');
       onDone(result.applied);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'The adaptor did not accept the write');

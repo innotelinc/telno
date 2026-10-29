@@ -68,6 +68,19 @@ register as nothing. The rule belongs to the platform, not the adaptor: the
 firmware accepts whatever string it is handed, which is precisely why a typo on
 the box is silent.
 
+## Registered is not the same as ringing
+
+A well-formed extension the estate has no line for is written anyway, with a
+warning. The unit will register it and report `registered` — the device sheet has
+no way to tell that apart from a working line — so `unknownExtensionWarning()` in
+`apps/server/src/estate.ts` asks the `lines` table and the answer rides back on
+the write as `warning`, in the audit event, and as a toast in the console.
+
+It warns instead of refusing because the estate's own 201 and 202 sat on this
+hardware before the platform had a record of them, and an operator may be
+deliberately ahead of the line inventory. Refusing would make the adaptor sheet
+unable to do the job it exists for.
+
 ## Measured on a real unit
 
 ```
