@@ -3,14 +3,24 @@ import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { parseResponse, cookiesFrom } from '../src/ata/raw.js';
 import {
+  AUTH_BACKOFF,
   credentialKey,
   decodeEntities,
   formFields,
   Ht802,
   labelValuePairs,
   pick,
+  type RefusalGuard,
 } from '../src/ata/ht802.js';
-import { ACCOUNT_BLOCK, ACCOUNT_SLOTS, AtaV2, accountFields, accountSlot } from '../src/ata/v2.js';
+import {
+  ACCOUNT_BLOCK,
+  ACCOUNT_SLOTS,
+  AtaV2,
+  accountFields,
+  accountSlot,
+  recordRefusal,
+  refusalVerdict,
+} from '../src/ata/v2.js';
 import { voiceProfileFor } from '../src/voice.js';
 
 /**
@@ -556,6 +566,97 @@ describe('the account block the TLS firmware writes', () => {
   it('refuses an empty user id rather than writing a blank identity', async () => {
     const device = new AtaV2({ host: '127.0.0.1', password: 'x' });
     await expect(device.setAccount({ account: 1, user: '   ' })).rejects.toThrow(/SIP user id is required/);
+  });
+});
+
+/**
+ * The TLS console counts login attempts and will not say how long its own ban
+ * lasts, so the platform's only defence is to stop knocking. These pin that
+ * decision, because getting it wrong costs a customer fifteen minutes of access
+ * to their own hardware — or, worse, spends the last attempts during a probe.
+ */
+describe('the refusal memory on the TLS firmware', () => {
+  const guardWith = (value?: { at: number; count: number; key?: string }) => {
+    let stored = value;
+    const guard: RefusalGuard = {
+      get: () => stored,
+      set: (_host, next) => {
+        stored = next;
+      },
+      clear: () => {
+        stored = undefined;
+      },
+    };
+    return { guard, read: () => stored };
+  };
+
+  it('tries a credential it has never seen refused', () => {
+    const { guard } = guardWith();
+    expect(refusalVerdict(guard, '192.168.1.5:443', credentialKey('right'))).toBeNull();
+  });
+
+  it('refuses to knock again while a refusal is cooling down', () => {
+    const key = credentialKey('wrong');
+    const { guard } = guardWith({ at: Date.now() - 10_000, count: 1, key });
+    const verdict = refusalVerdict(guard, '192.168.1.5:443', key);
+    expect(verdict?.stop).toBe(false);
+    // Five minutes back off less the ten seconds already spent.
+    expect(verdict?.remainSec).toBe(290);
+  });
+
+  it('lets a corrected password through, because the refusal was for the old one', () => {
+    const { guard, read } = guardWith({ at: Date.now(), count: 1, key: credentialKey('old') });
+    expect(refusalVerdict(guard, '192.168.1.5:443', credentialKey('new'))).toBeNull();
+    expect(read()).toBeUndefined();
+  });
+
+  it('stops entirely once the attempts have been spent, and never times out', () => {
+    const key = credentialKey('wrong');
+    const { guard } = guardWith({ at: Date.now(), count: AUTH_BACKOFF.length + 1, key });
+    expect(refusalVerdict(guard, '192.168.1.5:443', key)).toMatchObject({ stop: true, remainSec: 0 });
+  });
+
+  it('counts a refusal, and treats the last two attempts as a human decision', () => {
+    const key = credentialKey('wrong');
+    const { guard, read } = guardWith();
+    recordRefusal(guard, '192.168.1.5:443', key, 3);
+    expect(read()?.count).toBe(1);
+    recordRefusal(guard, '192.168.1.5:443', key, 2);
+    // Two left is where the platform stops gambling: an operator has to fix it.
+    expect(read()?.count).toBe(AUTH_BACKOFF.length + 1);
+    expect(refusalVerdict(guard, '192.168.1.5:443', key)?.stop).toBe(true);
+  });
+
+  it('does not dial the unit at all while a refusal is cooling down', async () => {
+    const key = credentialKey('wrong');
+    const { guard } = guardWith({ at: Date.now(), count: 1, key });
+    // Port 1 is closed, so a dial would answer "refused the connection" and fail
+    // this test — the point is that the password is never sent.
+    const device = new AtaV2({ host: '127.0.0.1', port: 1, password: 'wrong', guard, timeoutMs: 500 });
+    await expect(device.login()).rejects.toThrow(/will be tried again in/);
+  });
+
+  it('shows the cooldown in the adaptor view without contacting the unit', async () => {
+    const { guard } = guardWith({ at: Date.now(), count: 1, key: credentialKey('wrong') });
+    const device = new AtaV2({ host: '127.0.0.1', port: 1, password: 'wrong', guard, timeoutMs: 500 });
+    const view = await device.overview();
+    expect(view.state).toBe('auth');
+    expect(view.locked).toBe(true);
+    expect(view.remainSec).toBeGreaterThan(0);
+    expect(view.notes.join(' ')).toMatch(/will not send another password yet/);
+  });
+
+  it('reports an exhausted credential as a state to fix, not as a lockout timer', async () => {
+    const { guard } = guardWith({
+      at: Date.now(),
+      count: AUTH_BACKOFF.length + 1,
+      key: credentialKey('wrong'),
+    });
+    const device = new AtaV2({ host: '127.0.0.1', port: 1, password: 'wrong', guard, timeoutMs: 500 });
+    const view = await device.overview();
+    expect(view.state).toBe('auth');
+    expect(view.locked).toBe(false);
+    expect(view.notes.join(' ')).toMatch(/no further attempts are being made/);
   });
 });
 

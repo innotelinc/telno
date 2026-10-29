@@ -1000,6 +1000,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     } catch (err: unknown) {
       if (err instanceof AtaUnsupported) return bad(reply, err.message, 409);
       forgetAdaptor(target.host);
+      // A refused, cooled-down or unconfigured credential is a state the operator
+      // has to resolve; retrying cannot. Answering 502 would read as an outage.
+      const code = (err as { code?: unknown }).code;
+      if (code === 'ata_auth' || code === 'ata_locked' || code === 'ata_unconfigured') {
+        return bad(reply, err instanceof Error ? err.message : 'the adaptor refused the write', 409);
+      }
       return bad(reply, err instanceof Error ? err.message : 'the adaptor did not accept the write', 502);
     }
   });

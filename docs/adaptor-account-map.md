@@ -98,3 +98,27 @@ deliberate:
   from the form, so what appears is the read-back, not the request. On units
   whose firmware takes an account by form post rather than by API, the button is
   absent and the panel says why — there is no write path to offer.
+
+## Refused passwords, and why the platform stops knocking
+
+Both firmware families count failed logins. The V1 answers `/cgi-bin/api-get_lockouts`
+without a session, so its client can read the timer and wait it out. The TLS
+console does not: it answers `wrongN` with the attempts left and then simply
+stops accepting passwords for a duration nothing on the box reports.
+
+That asymmetry mattered once the console could write. Opening the device sheet
+logs in, and the write logs in again, so a stale `TELNO_ATA_PASSWORD` would
+spend an attempt every time somebody looked at the page — locking the unit out of
+its own console by accident. The refusal memory is therefore shared: same guard,
+same back-off, both firmwares.
+
+- A refusal is recorded per device against a digest of the password that was
+  refused, so correcting the credential is not blocked by the old one's cooldown.
+- Cooldown is 5 minutes, then 15, then no further attempts until the credential
+  changes and the platform restarts.
+- The unit's `wrongN` is honoured: with two attempts left the platform spends
+  none, because those last two belong to whoever is standing at the device.
+- During a cooldown the adaptor view reports `state: auth` with `locked` and
+  `remainSec` set from the platform's own timer, and says plainly that it is the
+  platform withholding the password — the unit's timer is not readable, so
+  presenting it as the device's would be a guess dressed as a measurement.

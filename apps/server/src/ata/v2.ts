@@ -1,6 +1,14 @@
 import https from 'node:https';
 import type { IncomingHttpHeaders } from 'node:http';
 import {
+  AUTH_BACKOFF,
+  AUTH_COOLDOWN_MS,
+  credentialKey,
+  formatWait,
+  memoryGuard,
+  type RefusalGuard,
+} from './ht802.js';
+import {
   emptyOverview,
   type AtaAccount,
   type AtaAccountWrite,
@@ -99,6 +107,71 @@ export class AtaV2Error extends Error {
   }
 }
 
+/**
+ * What a refused password costs on this firmware.
+ *
+ * The TLS console counts login attempts — it reports them as `wrongN` — but
+ * unlike the V1 it has no readable lockout timer: once it decides to stop
+ * answering, nothing on the box says for how long. So the only defence is not
+ * to knock, which matters more here than on the V1 because this is the firmware
+ * the platform writes to: opening the device sheet probes, the write path signs
+ * in again, and each of those spends an attempt. Without this memory a stale
+ * `TELNO_ATA_PASSWORD` would lock a customer's unit out of its own console just
+ * by being looked at.
+ */
+export interface RefusalVerdict {
+  /** Seconds left before another attempt may be sent; 0 when no attempt may ever be sent. */
+  remainSec: number;
+  invalidAttempts: number;
+  /** Not a cooldown: enough has been refused that no further attempt may be made. */
+  stop: boolean;
+}
+
+/** Null means "safe to try". */
+export function refusalVerdict(
+  guard: RefusalGuard,
+  label: string,
+  key: string,
+): RefusalVerdict | null {
+  const refusal = guard.get(label);
+  if (!refusal) return null;
+  if (refusal.key && refusal.key !== key) {
+    // Someone corrected the deployment: that earns one attempt, and the refusal
+    // recorded against the old password must not block it.
+    guard.clear(label);
+    return null;
+  }
+  if (refusal.count > AUTH_BACKOFF.length) {
+    return { remainSec: 0, invalidAttempts: refusal.count, stop: true };
+  }
+  const window = AUTH_BACKOFF[refusal.count - 1] ?? AUTH_COOLDOWN_MS;
+  const left = window - (Date.now() - refusal.at);
+  if (left <= 0) return null;
+  return { remainSec: Math.ceil(left / 1000), invalidAttempts: refusal.count, stop: false };
+}
+
+/** Remember a refusal, with the `wrongN` the unit answered if it said. */
+export function recordRefusal(
+  guard: RefusalGuard,
+  label: string,
+  key: string,
+  remainingAttempts?: number,
+): void {
+  const previous = guard.get(label);
+  const previousCount = previous && previous.key === key ? previous.count : 0;
+  // Two attempts left belong to a human: spending them locks the hardware for a
+  // timer this firmware will not disclose.
+  const exhausted = typeof remainingAttempts === 'number' && remainingAttempts <= 2;
+  guard.set(label, {
+    at: Date.now(),
+    count: exhausted ? AUTH_BACKOFF.length + 1 : previousCount + 1,
+    key,
+  });
+}
+
+const STOPPED =
+  "This deployment's adaptor password was refused repeatedly, so no further attempts are being made. Correct it and restart the platform.";
+
 interface CallOptions {
   host: string;
   port: number;
@@ -170,6 +243,8 @@ export interface AtaV2Options {
   username?: string;
   password?: string;
   timeoutMs?: number;
+  /** Durable store for refused passwords; the server passes a database-backed one. */
+  guard?: RefusalGuard;
 }
 
 export interface AtaAccountInput {
@@ -186,15 +261,24 @@ export class AtaV2 {
   readonly username: string;
   readonly password: string;
   readonly timeoutMs: number;
+  private readonly guard: RefusalGuard;
   private cookie = '';
   private sid = '';
 
-  constructor({ host, port = 443, username = 'admin', password = '', timeoutMs = 6000 }: AtaV2Options) {
+  constructor({
+    host,
+    port = 443,
+    username = 'admin',
+    password = '',
+    timeoutMs = 6000,
+    guard = memoryGuard,
+  }: AtaV2Options) {
     this.host = host;
     this.port = Number(port) || 443;
     this.username = username || 'admin';
     this.password = password || '';
     this.timeoutMs = timeoutMs;
+    this.guard = guard;
   }
 
   get label(): string {
@@ -234,25 +318,52 @@ export class AtaV2 {
   }
 
   async login(): Promise<{ ok: true; role: string | null; defaultAuth: boolean }> {
-    if (!this.password) throw new AtaV2Error('No admin password is configured for this device', 'ata_auth');
+    // A missing credential is a deployment state, not a refusal: it must not be
+    // counted against the unit's attempt budget or overwrite the digest that
+    // identifies the password actually refused.
+    if (!this.password) {
+      throw new AtaV2Error('No admin password is configured for this device', 'ata_unconfigured');
+    }
+
+    // Refusals are checked before a socket is opened. The unit counts every
+    // attempt, this firmware will not say when it gives up, and a console that is
+    // merely being looked at must not be able to lock the hardware out.
+    const key = credentialKey(this.password);
+    const verdict = refusalVerdict(this.guard, this.label, key);
+    if (verdict) {
+      if (verdict.stop) throw new AtaV2Error(STOPPED, 'ata_locked');
+      throw new AtaV2Error(
+        `The device refused this deployment's password and is counting failed attempts; it will be tried again in ${formatWait(verdict.remainSec)}.`,
+        'ata_auth',
+      );
+    }
+
     const body = `username=${encodeURIComponent(this.username)}&password=${encodeURIComponent(this.password)}`;
     const res = await this.#post('/cgi-bin/dologin', body);
     const payload = res.json;
     const payloadBody = (payload?.body ?? null) as { sid?: unknown; role?: unknown; defaultAuth?: unknown } | null;
     if (payload?.response === 'success' && payloadBody?.sid) {
       this.sid = String(payloadBody.sid);
+      // A working credential clears the memory, so a repaired deployment starts
+      // from zero attempts rather than from the last refusal's timer.
+      this.guard.clear(this.label);
       return {
         ok: true,
         role: payloadBody.role === undefined ? null : String(payloadBody.role),
         defaultAuth: Boolean(payloadBody.defaultAuth),
       };
     }
+
     // `wrongN` carries the attempts left, which is the one number worth passing on.
     const detail = typeof payload?.body === 'string' ? payload.body : '';
     const left = /^wrong(\d+)$/i.exec(detail)?.[1];
+    const remaining = left === undefined ? undefined : Number(left);
+    recordRefusal(this.guard, this.label, key, remaining);
+    const budgetGone = typeof remaining === 'number' && remaining <= 2;
     throw new AtaV2Error(
       left
-        ? `The device did not recognise that admin password (${left} attempt${left === '1' ? '' : 's'} left before a lockout)`
+        ? `The device did not recognise that admin password (${left} attempt${left === '1' ? '' : 's'} left before a lockout)` +
+          (budgetGone ? '. No further attempts will be made until the credential is corrected.' : '')
         : 'The device did not open a session for that password',
       'ata_auth',
     );
@@ -290,6 +401,32 @@ export class AtaV2 {
     const view = emptyOverview(this.target(), 'v2');
     view.sources = { api: 'values.get' };
 
+    // Honour the refusal memory before opening a socket. Reporting the cooldown
+    // is also the only way the console's lockout callout can ever appear for this
+    // firmware: the unit will not say how long its own ban lasts.
+    if (this.password) {
+      const verdict = refusalVerdict(this.guard, this.label, credentialKey(this.password));
+      if (verdict) {
+        view.reachable = true;
+        view.state = 'auth';
+        view.locked = verdict.remainSec > 0;
+        view.remainSec = verdict.remainSec;
+        view.lock = {
+          locked: view.locked,
+          remainSec: verdict.remainSec,
+          accessAttempts: 0,
+          invalidAttempts: verdict.invalidAttempts,
+        };
+        view.notes.push(
+          verdict.stop
+            ? STOPPED
+            : `The platform will not send another password yet: an earlier one was refused and this unit counts every attempt. It will try again in ${formatWait(verdict.remainSec)}.`,
+        );
+        view.tookMs = Date.now() - started;
+        return view;
+      }
+    }
+
     try {
       await this.login();
       view.reachable = true;
@@ -297,7 +434,10 @@ export class AtaV2 {
     } catch (err: unknown) {
       const code = err instanceof AtaV2Error ? err.code : '';
       view.reachable = code !== 'ata_unreachable';
-      view.state = code === 'ata_auth' ? 'auth' : 'unreachable';
+      // A refused, exhausted or unconfigured credential is all "we could not get
+      // in", which is the operator's problem to fix — not an unreachable box.
+      view.state =
+        code === 'ata_auth' || code === 'ata_locked' || code === 'ata_unconfigured' ? 'auth' : 'unreachable';
       view.notes.push(err instanceof Error ? err.message : 'the device did not answer');
       view.tookMs = Date.now() - started;
       return view;

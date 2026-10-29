@@ -77,6 +77,10 @@ export class AtaDevice {
         // Detection is a hint, not the read: a dead box must not cost two full
         // timeouts before the console can say it is unreachable.
         timeoutMs: Math.min(this.timeoutMs, 2500),
+        // Same refusal memory as the V1. This firmware is the one the platform
+        // writes to, so a stale password here would spend an attempt on every
+        // probe and every write — and its lock timer cannot be read back.
+        guard: this.guard,
       });
       let isV2 = false;
       try {
