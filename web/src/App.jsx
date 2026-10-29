@@ -17,6 +17,7 @@ import Fax from './pages/Fax.jsx';
 import Messages from './pages/Messages.jsx';
 import Billing from './pages/Billing.jsx';
 import Estate from './pages/Estate.jsx';
+import Device from './pages/Device.jsx';
 import Health from './pages/Health.jsx';
 import Operations from './pages/Operations.jsx';
 import Settings from './pages/Settings.jsx';
@@ -53,6 +54,7 @@ const PAGES = [
   { path: '/billing', title: 'Billing', subtitle: 'Invoices grouped by currency', Component: Billing },
   { path: '/plans', title: 'Plans and subscriptions', subtitle: 'What the subscribe page sells and who is paying', Component: Plans },
   { path: '/estate', title: 'Estate', subtitle: 'Sites and the equipment installed at them', Component: Estate },
+  { path: '/device', title: 'HT8022026', subtitle: 'The analog adaptor: two ports, live from the unit', Component: Device },
   { path: '/health', title: 'Health', subtitle: 'Live probes across the container', Component: Health },
   { path: '/operations', title: 'Operations', subtitle: 'Incidents, changes and provisioning', Component: Operations },
   { path: '/systems', title: 'Connected systems', subtitle: 'The consoles this platform sits beside', Component: Systems },

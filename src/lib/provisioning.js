@@ -1,134 +1,224 @@
 import { config } from '../config.js';
 
 /**
- * Provisioning templates.
+ * Device profiles.
  *
- * These are the formats that cover most of the estate: Yealink key/value `.cfg`,
- * Grandstream XML and Polycom's XML. Each carries the SIP account, the check-in
- * endpoint and a fresh device token, so a phone that boots from this file starts
- * checking in without anyone typing anything into it.
+ * This replaces the per-manufacturer template approach, where every handset
+ * model got its own key names and its own idea of what a line is. Those files
+ * existed to speak three dialects of SIP, and the platform speaks one protocol:
+ * Cantus. So there is one profile format now, written by us, and it describes
+ * the platform rather than transcribing somebody else's firmware:
  *
- * Two things are deliberate. The SIP server is `telno.tel` (the provisioning
- * domain), not the public web host, so the URI a handset registers as is
- * `sip:<extension>@telno.tel` — the same name the console shows. And the
- * transport is UDP 5060, which is the listener chan_pjsip actually has: an
- * earlier template pointed handsets at 5061/TLS, a port this switch never
- * opened, so a phone fetched a config and then failed to register with nothing
- * in the log to explain why.
+ *   telno   — our own JSON document, Cantus-native. This is what a Telno
+ *             endpoint (softphone, desk client, edge) consumes.
+ *   terminal— the same identity and reach information in XML, for the thing on
+ *             the wall: a SIP↔Cantus edge, or a gateway that fronts legacy
+ *             analog hardware. No vendor schema, no vendor branding.
+ *
+ * A device still checks in and still fetches its file by MAC, so nothing about
+ * the inventory, the token rotation or the public endpoint changes. What changes
+ * is what comes back: a description of the platform, not a transcription of
+ * somebody else's firmware.
  */
 
-export const PROVISION_FORMATS = ['yealink', 'grandstream', 'polycom'];
+export const PROFILE_KINDS = ['telno', 'terminal', 'compat'];
 
-const webBase = () => config.publicUrl.replace(/\/$/, '');
-const sipHost = () => config.provisioning.sipDomain;
-const sipPort = () => config.provisioning.sipPort;
+/**
+ * `compat` is the one deliberate exception to "no vendor schemas".
+ *
+ * A stock adaptor parses nothing but its own configuration format, and it will
+ * not fetch a Telno profile no matter how correct that profile is. So there is a
+ * serializer that emits the unit's own schema — opt-in, chosen per device, never
+ * the default, and confined to this one function. The Cantus profile remains the
+ * profile; this is the adapter that lets a box on a wall join in before it has an
+ * edge in front of it.
+ *
+ * Every parameter written here was read back off the live unit rather than taken
+ * from a manual: P271/P401 (port active), P35/P735 (SIP user), P3/P703 (auth
+ * password), P47/P747 (SIP server), P40/P740 (local SIP port). Nothing else is
+ * emitted, because a P-number nobody verified is a setting that silently blanks
+ * something the operator needed.
+ */
 
-/** The URL a handset should be given, by MAC, with no session involved. */
-export function provisioningUrl(device, format = 'yealink') {
-  const mac = String(device?.mac || '').replace(/[^A-Fa-f0-9]/g, '').toLowerCase();
-  const ext = format === 'grandstream' ? 'xml' : 'cfg';
-  return `${config.provisioning.baseUrl}/provision/${format}/${mac || 'unknown'}.${ext}`;
+const base = () => config.publicUrl.replace(/\/$/, '');
+const checkInUrl = () => `${base()}/api/devices/heartbeat`;
+
+/** The Cantus endpoint a Telno device registers with. */
+export function cantusEndpoint() {
+  const host = config.cantus.host || config.provisioning.sipDomain;
+  return `cantus://${host}:${config.cantus.port}`;
 }
 
-/** Where Option 66 (or "provisioning server") points on this deployment. */
+/** URL the device fetches, by MAC. */
+export function provisioningUrl(device, kind = 'telno') {
+  const mac = String(device?.mac || '').replace(/[^A-Fa-f0-9]/g, '').toLowerCase();
+  const ext = kind === 'telno' ? 'json' : 'xml';
+  return `${config.provisioning.baseUrl}/provision/${kind}/${mac || 'unknown'}.${ext}`;
+}
+
 export const provisioningServer = () => config.provisioning.baseUrl;
 
-const label = (device) => String(device?.name || 'Telno').slice(0, 40);
+// Capability ids are Cantus's, in preference order: the caller's order wins.
+const CAPABILITIES = ['opus/48000/2', 'pcmu/8000/1', 'pcma/8000/1'];
 
-function yealink({ device, extension, token }) {
-  const lines = [
-    '# Telno provisioning — Yealink',
-    `# device: ${device.name} (${device.mac || 'no MAC on file'})`,
-    '',
-    `account.1.label = ${label(device)}`,
-    extension
-      ? [
-          'account.1.enable = 1',
-          `account.1.display_name = ${extension.display_name}`,
-          `account.1.user_name = ${extension.extension}`,
-          `account.1.auth_name = ${extension.extension}`,
-          `account.1.password = ${extension.secret}`,
-          `account.1.sip_server.1.address = ${sipHost()}`,
-          `account.1.sip_server.1.port = ${sipPort()}`,
-          '# 0 = UDP: this switch listens on 5060 for handsets.',
-          'account.1.sip_server.1.transport = 0',
-          '# SRTP stays off on the desk-phone endpoint; the encrypted line is the',
-          '# WSS softphone, which negotiates DTLS per media stream.',
-          'account.1.srtp = 0',
-          'account.1.rtp.encryption = 0',
-          `account.1.outbound_proxy.1.address = ${sipHost()}`,
-        ].join('\n')
-      : '# No extension attached: this device is infrastructure-only.',
-    '',
-    '# Check-in: POST this token so the platform sees the handset come up.',
-    `device.checkin.url = ${webBase()}/api/devices/heartbeat`,
-    `device.checkin.token = ${token}`,
-    `device.checkin.interval = ${config.devices.checkInSec}`,
-    'auto_provision.repeat.enable = 1',
-    'auto_provision.repeat.minutes = 60',
-  ];
-  return lines.filter((line) => line !== null).join('\n') + '\n';
+function identityBlock({ device, extension }) {
+  if (!extension) return null;
+  return {
+    extension: extension.extension,
+    displayName: extension.display_name,
+    // The credential is in the profile because the profile is the only thing a
+    // fresh endpoint has; the check-in token is separate and rotates.
+    secret: extension.secret,
+    label: String(device?.name || extension.display_name || 'Telno').slice(0, 40),
+  };
 }
 
-const esc = (value) =>
+function voiceBlock() {
+  return {
+    protocol: 'cantus',
+    version: '1.0',
+    endpoint: cantusEndpoint(),
+    realm: config.cantus.realm,
+    capabilities: CAPABILITIES,
+    // Reach is always on in Cantus: the relay mapping is kept for the life of
+    // the endpoint, so there is no nat_* knob to get wrong here.
+    traversal: 'reach',
+    media: 'single-socket',
+  };
+}
+
+/** The SIP side, only when a SIP↔Cantus edge has been configured. */
+function edgeBlock() {
+  if (!config.cantus.sipEdge) return null;
+  return {
+    role: 'legacy-terminal',
+    register: `sip:${config.cantus.sipEdge}`,
+    transport: `udp/${config.provisioning.sipPort}`,
+    bridgedTo: cantusEndpoint(),
+    // Stated in the profile because an operator will otherwise assume it works.
+    fax: 'unsupported-on-cantus',
+  };
+}
+
+function telnoProfile({ device, extension, token }) {
+  const doc = {
+    profile: 'telno-device/1',
+    issuedAt: new Date().toISOString(),
+    device: {
+      name: device?.name || 'Telno endpoint',
+      mac: device?.mac || null,
+      kind: device?.kind || 'handset',
+    },
+    lines: identityBlock({ device, extension }) ? [identityBlock({ device, extension })] : [],
+    voice: voiceBlock(),
+    sip: edgeBlock(),
+    checkIn: {
+      url: checkInUrl(),
+      token,
+      intervalSec: config.devices.checkInSec,
+    },
+  };
+  return {
+    fileName: `${slug(device?.name)}.json`,
+    contentType: 'application/json',
+    body: `${JSON.stringify(doc, null, 2)}\n`,
+  };
+}
+
+const xmlEscape = (value) =>
   String(value ?? '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
 
-function grandstream({ device, extension, token }) {
-  const account = extension
-    ? `
-      <P271>${esc(extension.extension)}</P271>
-      <P270>1</P270>
-      <P3>${esc(extension.display_name)}</P3>
-      <P34>${esc(extension.extension)}</P34>
-      <P35>${esc(extension.secret)}</P35>
-      <P47>${esc(sipHost())}</P47>
-      <P48>${sipPort()}</P48>
-      <P40>0</P40>
-      <P1836>1</P1836>
-      <P1841>0</P1841>`
-    : '\n      <!-- No extension attached: infrastructure-only device. -->';
-  return `<?xml version="1.0" encoding="UTF-8"?>
+/**
+ * The terminal profile.
+ *
+ * Same facts as the JSON profile, in the shape a firmware on a wall can parse.
+ * Deliberately not a vendor schema: `<telno-profile>` is ours, and the element
+ * names describe the platform (voice, reach, checkin) rather than a phone menu.
+ */
+function terminalProfile({ device, extension, token }) {
+  const line = identityBlock({ device, extension });
+  const lines = line
+    ? `\n    <line index="1">
+      <extension>${xmlEscape(line.extension)}</extension>
+      <display-name>${xmlEscape(line.displayName)}</display-name>
+      <secret>${xmlEscape(line.secret)}</secret>
+    </line>`
+    : '\n    <!-- No extension is attached to this device. -->';
+  const edge = edgeBlock();
+  const edgeXml = edge
+    ? `\n    <edge role="${xmlEscape(edge.role)}">
+      <register>${xmlEscape(edge.register)}</register>
+      <transport>${xmlEscape(edge.transport)}</transport>
+      <bridged-to>${xmlEscape(edge.bridgedTo)}</bridged-to>
+      <fax>${xmlEscape(edge.fax)}</fax>
+    </edge>`
+    : '';
+  return {
+    fileName: `${slug(device?.name)}.xml`,
+    contentType: 'application/xml',
+    body: `<?xml version="1.0" encoding="UTF-8"?>
+<telno-profile version="1">
+  <device>
+    <name>${xmlEscape(device?.name || 'Telno endpoint')}</name>
+    <mac>${xmlEscape(device?.mac || '')}</mac>
+    <kind>${xmlEscape(device?.kind || 'handset')}</kind>
+  </device>
+  <voice>
+    <protocol>cantus</protocol>
+    <version>1.0</version>
+    <endpoint>${xmlEscape(cantusEndpoint())}</endpoint>
+    <realm>${xmlEscape(config.cantus.realm)}</realm>
+    <traversal>reach</traversal>
+    <capability>${CAPABILITIES.join('</capability>\n    <capability>')}</capability>
+  </voice>${edgeXml}
+  <lines>${lines}
+  </lines>
+  <checkin url="${xmlEscape(checkInUrl())}" interval="${config.devices.checkInSec}">${xmlEscape(token)}</checkin>
+</telno-profile>
+`,
+  };
+}
+
+function compatProfile({ device, extension, token }) {
+  const line = identityBlock({ device, extension });
+  const server = config.cantus.sipEdge
+    ? config.cantus.sipEdge.split(':')[0]
+    : config.provisioning.sipDomain;
+  const port = String(config.provisioning.sipPort);
+  const portTwoOff = '<P401>0</P401>';
+
+  const accountOne = line
+    ? `<P271>1</P271>
+      <P35>${xmlEscape(line.extension)}</P35>
+      <P3>${xmlEscape(line.secret)}</P3>
+      <P47>${xmlEscape(server)}</P47>
+      <P40>${xmlEscape(port)}</P40>`
+    : '<P271>0</P271>';
+
+  return {
+    fileName: `${slug(device?.name)}.xml`,
+    contentType: 'application/xml',
+    body: `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Telno compatibility profile.
+     This file exists because a stock adaptor only parses this format. The Telno
+     profile (telno-device/1, JSON) is the real one; fetch that when the device
+     sits behind a SIP edge instead. Voice on this deployment: Cantus 1.0. -->
 <gs_provision version="1">
   <config version="1">
-    <P192>Telno</P192>
-    <P150>${esc(device.name)}</P150>${account}
-    <P140>${esc(`${webBase()}/api/devices/heartbeat`)}</P140>
-    <P141>${esc(token)}</P141>
+    ${accountOne}
+    ${portTwoOff}
+    <P140>${xmlEscape(checkInUrl())}</P140>
+    <P141>${xmlEscape(token)}</P141>
     <P142>${config.devices.checkInSec}</P142>
   </config>
 </gs_provision>
-`;
+`,
+  };
 }
 
-function polycom({ device, extension, token }) {
-  const reg = extension
-    ? `
-      <reg reg.1.address="${esc(extension.extension)}" />
-      <reg reg.1.auth.userId="${esc(extension.extension)}" />
-      <reg reg.1.auth.password="${esc(extension.secret)}" />
-      <reg reg.1.displayName="${esc(extension.display_name)}" />
-      <reg reg.1.server.1.address="${esc(sipHost())}" />
-      <reg reg.1.server.1.port="${sipPort()}" />
-      <reg reg.1.server.1.transport="UDPonly" />`
-    : '\n      <!-- No extension attached: infrastructure-only device. -->';
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<polycomConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <device device.set="1" device.dhcp.enabled="1" />
-  <device device.name="${esc(label(device))}" />${reg}
-  <apps apps.ucdesk.softkey.1.label="Telno" />
-  <prov prov.polling.mode="abs" prov.polling.period="3600" />
-</polycomConfig>
-`;
-}
-
-export function buildProvisioning(format, payload) {
-  if (format === 'grandstream') {
-    return { fileName: `${slug(payload.device.name)}.xml`, contentType: 'application/xml', body: grandstream(payload) };
-  }
-  if (format === 'polycom') {
-    return { fileName: `${slug(payload.device.name)}.cfg`, contentType: 'application/xml', body: polycom(payload) };
-  }
-  return { fileName: `${slug(payload.device.name)}.cfg`, contentType: 'text/plain', body: yealink(payload) };
+export function buildProfile(kind, payload) {
+  if (kind === 'compat') return compatProfile(payload);
+  return kind === 'terminal' ? terminalProfile(payload) : telnoProfile(payload);
 }
 
 const slug = (name) =>

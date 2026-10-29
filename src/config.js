@@ -69,6 +69,24 @@ export const config = {
     staleAfterSec: Math.max(60, int(env.DEVICE_STALE_AFTER_SEC, 900)),
   },
 
+  // Analog adaptors — the Telno HT8022026 — sit on the customer's own LAN, not
+  // on a public hostname, so the platform has to reach them at an address the
+  // deployment supplies. The admin password lives here, in the environment, and
+  // never in a database row or a page: it is only ever used to read state and to
+  // ask for a reboot.
+  ata: {
+    host: env.ATA_HOST || '',
+    port: int(env.ATA_PORT, 80),
+    username: env.ATA_USER || 'admin',
+    password: env.ATA_PASSWORD || '',
+    // This firmware answers its JSON endpoints in well under a second but is
+    // single-threaded enough that a page load can queue behind a reboot.
+    timeoutMs: Math.max(1000, int(env.ATA_TIMEOUT_MS, 6000)),
+    // How long a probe result is reused before the console asks the box again:
+    // every request is a socket to a device with a 15-minute lockout counter.
+    cacheSeconds: Math.max(0, int(env.ATA_CACHE_SECONDS, 10)),
+  },
+
   // Desk phones fetch their configuration from this platform, so a handset with
   // nothing on it can be brought up by MAC alone: Option 66 (or the phone's
   // provisioning URL field) points here, and the phone asks for its own file.
@@ -83,6 +101,23 @@ export const config = {
     // the inventory; this token gates the public endpoint so a stranger cannot
     // enumerate extensions by guessing MAC addresses.
     requireToken: bool(env.PROVISIONING_REQUIRE_TOKEN, false),
+  },
+
+  // Voice protocol: Cantus 1.0 — one UDP socket on 7443, no SIP, no SDP, no RTP.
+  //
+  // An analog adaptor cannot speak it. The HT802 is a SIP endpoint and nothing
+  // else, so an adaptor reaches Cantus through a SIP edge that terminates SIP
+  // from the box and speaks Cantus onwards; that edge is the SIP server written
+  // into the adaptor's provisioning file. With no edge configured the adaptor
+  // keeps pointing at the platform's own SIP domain, which is the honest answer:
+  // it is a SIP device and the platform has to meet it where it is.
+  cantus: {
+    enabled: bool(env.CANTUS_ENABLED, false),
+    host: env.CANTUS_HOST || '',
+    port: int(env.CANTUS_PORT, 7443),
+    realm: env.CANTUS_REALM || 'telno.tel',
+    // host:port of the SIP↔Cantus edge an adaptor registers against.
+    sipEdge: env.CANTUS_SIP_EDGE || '',
   },
 
   // Fax: the switch is the fax machine. res_fax negotiates T.38 with the carrier

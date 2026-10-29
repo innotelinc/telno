@@ -1,7 +1,7 @@
 import { db_, newId, now } from '../db/index.js';
 import { config } from '../config.js';
 import { newDeviceToken } from '../lib/security.js';
-import { PROVISION_FORMATS, buildProvisioning } from '../lib/provisioning.js';
+import { PROFILE_KINDS, buildProfile } from '../lib/provisioning.js';
 import {
   DEVICE_KINDS,
   DEVICE_STATES,
@@ -1483,14 +1483,14 @@ export default async function workspaceRoutes(app) {
   app.get('/estate/devices/:id/provisioning', { preHandler: requireWrite }, async (request) => {
     const row = db_.get('SELECT * FROM devices WHERE id = ?', [request.params.id]);
     if (!row) throw notFound('Device not found');
-    const format = v.oneOf(request.query?.format || 'yealink', PROVISION_FORMATS, 'format');
+    const kind = v.oneOf(request.query?.format || 'telno', PROFILE_KINDS, 'format');
     const extension = row.extension_id
       ? db_.get('SELECT * FROM extensions WHERE id = ?', [row.extension_id])
       : null;
     const token = newDeviceToken();
     db_.run('UPDATE devices SET token_hash = ?, updated_at = ? WHERE id = ?', [token.hash, now(), row.id]);
-    const built = buildProvisioning(format, {
-      device: { name: row.name, mac: row.mac, label: extension?.extension || row.name },
+    const built = buildProfile(kind, {
+      device: { name: row.name, mac: row.mac, kind: row.kind, label: extension?.extension || row.name },
       extension,
       token: token.secret,
     });
@@ -1498,12 +1498,12 @@ export default async function workspaceRoutes(app) {
       actor: request.account.email,
       action: 'estate.device_provisioned',
       subject: row.name,
-      detail: `${format} config issued, token rotated`,
+      detail: `${kind} profile issued, token rotated`,
       ip: request.ip,
     });
     return {
       deviceId: row.id,
-      format,
+      format: kind,
       fileName: built.fileName,
       contentType: built.contentType,
       config: built.body,

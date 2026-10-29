@@ -169,7 +169,7 @@ export default function Estate() {
     }
   };
 
-  const provisionDevice = async (device, format = 'yealink') => {
+  const provisionDevice = async (device, format = 'telno') => {
     setBusy(device.id);
     try {
       const data = await api.get(`/estate/devices/${device.id}/provisioning?format=${format}`);
@@ -482,7 +482,7 @@ export default function Estate() {
                   <option key={kind} value={kind}>{kind}</option>
                 ))}
               </Select>
-              <Input label="Model" value={deviceForm.model} onChange={(e) => setDeviceForm({ ...deviceForm, model: e.target.value })} placeholder="Yealink T54W" />
+              <Input label="Model" value={deviceForm.model} onChange={(e) => setDeviceForm({ ...deviceForm, model: e.target.value })} placeholder="Telno HT8022026" />
             </div>
             <div className="grid two">
               <Input
@@ -562,8 +562,9 @@ export default function Estate() {
               value={provision.format}
               onChange={(e) => provisionDevice({ id: provision.deviceId, name: provision.deviceName }, e.target.value)}
             >
-              <option value="yealink">Yealink .cfg</option>
-              <option value="grandstream">Grandstream .xml</option>
+              <option value="telno">Telno profile .json</option>
+              <option value="terminal">Terminal profile .xml</option>
+              <option value="compat">Device-native .xml (legacy units)</option>
             </Select>
             <pre
               className="mono tiny"

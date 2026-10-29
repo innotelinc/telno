@@ -48,6 +48,9 @@ const GROUPS = [
       { path: '/billing', label: 'Billing', icon: 'card' },
       { path: '/plans', label: 'Plans', icon: 'tag' },
       { path: '/estate', label: 'Estate', icon: 'building' },
+      // The analog adaptor, read live from the unit rather than from a row:
+      // it is the first product in the estate with a console of its own.
+      { path: '/device', label: 'HT8022026', icon: 'phone' },
     ],
   },
   {

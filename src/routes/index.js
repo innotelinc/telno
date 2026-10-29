@@ -18,6 +18,7 @@ import setupRoutes from './setup.js';
 import onboardingRoutes from './onboarding.js';
 import secureRoutes from './secure.js';
 import crmRoutes from './crm.js';
+import ataRoutes from './ata.js';
 
 /** Everything under /api. */
 export async function registerRoutes(app) {
@@ -56,6 +57,9 @@ export async function registerRoutes(app) {
   // The operator's customer panel: one identity with its lines, bills, calls,
   // tickets and notes joined, plus the money a bill was actually settled with.
   await app.register(crmRoutes);
+  // The analog adaptor: the Telno HT8022026. Reads the box over the LAN with a
+  // client that survives its firmware's malformed HTTP, and answers in JSON.
+  await app.register(ataRoutes);
 }
 
 export default registerRoutes;
