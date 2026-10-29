@@ -52,6 +52,8 @@ const PATHS = {
   video: 'M3 7h11v10H3zM14 11l7-4v10l-7-4',
   videoOff: 'M3 3l18 18M3 7h8M14 11l7-4v10l-4-2.3M3 7v10h8',
   screen: 'M3 5h18v11H3zM8 21h8M12 16v5',
+  // Hold: two bars, the shape every phone uses for "the call is waiting".
+  pause: 'M9 5v14M15 5v14',
   volume: 'M11 5 6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13',
   speaker: 'M4 9h3l5-4v14l-5-4H4zM16 9a4 4 0 0 1 0 6M18.5 6.5a7 7 0 0 1 0 11',
   terminal: 'M4 17l6-5-6-5M12 19h8',

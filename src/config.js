@@ -152,6 +152,10 @@ export const config = {
     ariSecret: env.ARI_SECRET || '',
     configDir: env.ASTERISK_CONFIG_DIR || '',
     reloadOnApply: bool(env.ASTERISK_RELOAD, true),
+    // Where the switch keeps its music-on-hold files. The generated
+    // musiconhold.conf points here, so a deployment with its own hold music only
+    // has to say where it is.
+    mohDir: env.ASTERISK_MOH_DIR || '/var/lib/asterisk/moh',
     // NAT: the address a client outside the container can actually reach. On
     // Docker's bridge network Asterisk would otherwise advertise its container
     // IP in ICE candidates and media would never arrive.
