@@ -216,8 +216,16 @@ export class AtaV2 {
     }
 
     view.state = 'online';
-    const value = (key) => (values[key] === '' || values[key] === undefined ? null : values[key]);
-    const active = (key) => String(values[key] || '') === '1';
+    // Trim before testing emptiness. The unit pads some values with spaces
+    // (` 02:29:04 up 27 days`), and a value of " " is truthy — which briefly
+    // made a port with no SIP user report as "configured" here.
+    const value = (key) => {
+      const raw = values[key];
+      if (raw === undefined || raw === null) return null;
+      const text = String(raw).trim();
+      return text === '' ? null : text;
+    };
+    const active = (key) => String(values[key] ?? '').trim() === '1';
 
     view.identity = {
       model: 'HT802',
@@ -229,7 +237,7 @@ export class AtaV2 {
       uptime: (() => {
         const raw = value('P199');
         if (!raw) return null;
-        const since = /\bup\s+(.+)$/i.exec(String(raw).trim());
+        const since = /\bup\s+(.+)$/i.exec(String(raw));
         return since ? since[1].trim() : String(raw).trim();
       })(),
       ip: this.host,
