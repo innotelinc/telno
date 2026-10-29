@@ -150,9 +150,13 @@ export class AmiClient extends EventEmitter {
     // command that actually exists. Sending the old one returns "No such
     // command" and leaves the running switch on its previous configuration.
     const commands = {
-      all: ['dialplan reload', 'module reload res_pjsip.so'],
+      // `moh reload` is what makes a new music-on-hold class exist without a
+      // restart: a re-INVITE with a hold class the switch has never loaded
+      // fails with "no music class" and the call goes silent instead.
+      all: ['dialplan reload', 'module reload res_pjsip.so', 'moh reload'],
       dialplan: ['dialplan reload'],
       pjsip: ['module reload res_pjsip.so'],
+      moh: ['moh reload'],
     }[what] || ['dialplan reload'];
     const results = [];
     for (const command of commands) {

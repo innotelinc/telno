@@ -88,6 +88,30 @@ function explain(error, status) {
   return message;
 }
 
+/**
+ * Rewrite an SDP so this side's media is one-way, which is what holding a call
+ * actually is on the wire.
+ *
+ * The softphone's own hold button used to be missing entirely, and hold that only
+ * stops the local microphone is silence rather than hold: the other party sits in
+ * a live call hearing nothing and the switch never learns the call changed. A
+ * re-INVITE carrying `a=sendonly` is the signal that makes Asterisk put the other
+ * leg into music on hold; dropping back to `sendrecv` resumes it.
+ */
+function holdDescription(description, on) {
+  const sdp = String(description?.sdp || '');
+  const lines = sdp.split('\n').map((line) => {
+    const body = line.replace(/\r$/, '').trim();
+    // Only a two-way direction changes. A line that is already inactive, or
+    // already one-way, is left alone so resuming cannot invent audio the callee
+    // never offered.
+    if (on && body === 'a=sendrecv') return line.replace('a=sendrecv', 'a=sendonly');
+    if (!on && body === 'a=sendonly') return line.replace('a=sendonly', 'a=sendrecv');
+    return line;
+  });
+  return { ...description, sdp: lines.join('\n') };
+}
+
 const fmtDuration = (ms) => {
   const total = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(total / 60);
@@ -112,6 +136,8 @@ export default function Softphone() {
   const [dial, setDial] = useState('');
   const [call, setCall] = useState(null);
   const [muted, setMuted] = useState(false);
+  // Held at the switch, not muted here: the switch is what plays the music.
+  const [holding, setHolding] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [incoming, setIncoming] = useState(false);
@@ -275,18 +301,37 @@ export default function Softphone() {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
   }, []);
 
+  /**
+   * End the call at the switch.
+   *
+   * The case that used to be silent is the one that matters: a BYE the switch
+   * does not accept. Clearing the screen anyway told the operator the call was
+   * over while the other phone kept ringing and the line stayed up — a hangup
+   * that only looked like one. A failure now leaves the call on screen with the
+   * reason, so the button can be pressed again instead of the state being lost.
+   */
   const hangup = useCallback(async () => {
     const session = sessionRef.current;
-    try {
-      if (session?.state === 'Established') await session.bye();
-      else if (session) await session.cancel?.();
-    } catch {
-      /* already gone */
+    const state = session?.state;
+    if (session && state !== 'Terminated') {
+      try {
+        // Not answered yet: there is no dialog to end, so a BYE is refused and a
+        // CANCEL is what actually stops the ringing.
+        if (state === 'Initial' || state === 'Establishing') await session.cancel();
+        else await session.bye();
+      } catch (error) {
+        toast.error(
+          'Hang up not confirmed',
+          `${error?.message || 'the switch did not answer'} — the call may still be up at the switch. Try again.`
+        );
+        return;
+      }
     }
     sessionRef.current = null;
     pcRef.current = null;
     stopMedia();
     setCall(null);
+    setHolding(false);
     setMuted(false);
     setCameraOn(false);
     setSharing(false);
@@ -294,7 +339,7 @@ export default function Softphone() {
     setElapsed(0);
     sendPresence('idle', '');
     wsRef.current?.send(JSON.stringify({ type: 'bye' }));
-  }, [sendPresence, stopMedia]);
+  }, [sendPresence, stopMedia, toast]);
 
   const disconnect = useCallback(async () => {
     await hangup();
@@ -396,6 +441,7 @@ export default function Softphone() {
             setSecure(null);
             setSharing(false);
             setMuted(false);
+            setHolding(false);
             sendPresence('idle', '');
           }
         });
@@ -597,6 +643,7 @@ export default function Softphone() {
         setSecure(null);
         setSharing(false);
         setMuted(false);
+        setHolding(false);
         sendPresence('idle', '');
       }
     });
@@ -631,6 +678,7 @@ export default function Softphone() {
     }
     setCall(null);
     sessionRef.current = null;
+    setHolding(false);
     sendPresence('idle', '');
   };
 
@@ -642,6 +690,39 @@ export default function Softphone() {
       .filter((sender) => sender.track?.kind === 'audio')
       .forEach((sender) => (sender.track.enabled = !next));
     setMuted(next);
+  };
+
+  /**
+   * Put the far end on hold — at the switch, where the music is.
+   *
+   * `session.invite()` is a re-INVITE inside the existing dialog; the modifier
+   * rewrites the offer to send-only, so the switch hears "hold" instead of the
+   * browser simply going quiet. A refusal puts the button back: a hold that
+   * silently did nothing is how the other party ends up in silence with nobody
+   * able to tell why.
+   */
+  const toggleHold = async () => {
+    const session = sessionRef.current;
+    if (!session || session.state !== 'Established') return;
+    const next = !holding;
+    setHolding(next);
+    try {
+      await session.invite({
+        sessionDescriptionHandlerModifiers: [(description) => Promise.resolve(holdDescription(description, next))],
+        requestDelegate: {
+          onReject: () => {
+            setHolding(!next);
+            toast.error(
+              next ? 'Hold refused' : 'Resume refused',
+              'The switch rejected the re-INVITE; the call is unchanged.'
+            );
+          },
+        },
+      });
+    } catch (error) {
+      setHolding(!next);
+      toast.error(next ? 'Could not hold' : 'Could not resume', error.message);
+    }
   };
 
   const toggleCamera = async () => {
@@ -916,6 +997,9 @@ export default function Softphone() {
                 <Button variant="ghost" icon={muted ? 'micOff' : 'mic'} onClick={toggleMute} disabled={!inCall}>
                   {muted ? 'Unmute' : 'Mute'}
                 </Button>
+                <Button variant="ghost" icon="pause" onClick={toggleHold} disabled={call?.state !== 'incall'}>
+                  {holding ? 'Resume' : 'Hold'}
+                </Button>
                 <Button variant="ghost" icon={cameraOn ? 'video' : 'videoOff'} onClick={toggleCamera} disabled={!inCall || !status.video}>
                   Camera
                 </Button>
@@ -941,6 +1025,7 @@ export default function Softphone() {
                       {call.state === 'incall' ? fmtDuration(elapsed) : call.state}
                     </Badge>
                     {call.direction === 'inbound' ? <Badge tone="info">inbound</Badge> : null}
+                    {holding ? <Badge tone="warning" dot="warn">on hold</Badge> : null}
                     {secure ? <Badge tone="success">DTLS-SRTP</Badge> : null}
                     {reconnecting ? <Badge tone="warning" dot="warn">reconnecting</Badge> : null}
                   </div>
