@@ -122,8 +122,23 @@ describe('voice profile per model', () => {
  * clients: a doubled status line and a CGI shebang where a header belongs.
  * This is what makes the login handshake testable without hardware.
  */
-function fakeHt802(password: string, remaining = 4) {
+function fakeHt802(password: string, remaining = 4, legacy = false) {
   const requests: string[] = [];
+  const bodies: string[] = [];
+  const sessionToken = 'tok123';
+  const gnkey = 'abc123';
+  const loginForm = legacy
+    ? `<form action="/cgi-bin/dologin" method="post" name="loginForm">
+         <input name="P2" type="password" id="input-password">
+         <input type="submit" name="Login" value="Login">
+         <input name="gnkey" type="hidden" value="${gnkey}"></form>`
+    : `<form action="dologin" method="post" name="loginForm">
+         <input type="hidden" name="session_token" value="${sessionToken}">
+         <input name="username" type="text" value="admin">
+         <input name="P2" type="password" id="input-password">
+         <input type="submit" name="Login" value="Login">
+         <input name="gnkey" type="hidden" value="${gnkey}"></form>`;
+
   const server = createServer((socket) => {
     let buffer = '';
     socket.on('data', (chunk) => {
@@ -136,15 +151,16 @@ function fakeHt802(password: string, remaining = 4) {
       if (buffer.length < headEnd + 4 + length) return;
       const body = buffer.slice(headEnd + 4, headEnd + 4 + length);
       requests.push(`${method} ${path}`);
+      if (body) bodies.push(body);
 
       const send = (text: string) => socket.end(text);
+      const page = (html: string) =>
+        send('HTTP/1.0 200 OK\r\nHTTP/1.1 200 OK\nContent-Type: text/html\r\n\r\n' + html);
 
-      if (path === '/') {
-        return send(
-          'HTTP/1.0 200 OK\r\nHTTP/1.1 200 OK\nContent-Type: text/html\r\n\r\n' +
-            '<form action="dologin"><input name="gnkey" value="abc123"></form>',
-        );
+      if (path === '/cgi-bin/login') {
+        return legacy ? send('HTTP/1.0 404 Not Found\r\n\r\n') : page(loginForm);
       }
+      if (path === '/') return page(loginForm);
       if (path === '/cgi-bin/api-get_lockouts') {
         return send(
           'HTTP/1.0 200 OK\r\n#!/bin/ash\nContent-Type: application/json\r\n\r\n' +
@@ -152,9 +168,13 @@ function fakeHt802(password: string, remaining = 4) {
         );
       }
       if (path === '/cgi-bin/dologin') {
-        const p2 = new URLSearchParams(body).get('P2') ?? '';
-        const ok = Buffer.from(p2, 'base64').toString('utf8') === password;
-        return ok
+        const params = new URLSearchParams(body);
+        const passwordOk = Buffer.from(params.get('P2') ?? '', 'base64').toString('utf8') === password;
+        // The 1.0.x console rejects the short form even when the password is
+        // right, which is exactly the failure this client has to reproduce.
+        const formOk =
+          legacy || (params.get('username') === 'admin' && params.get('session_token') === sessionToken);
+        return passwordOk && formOk
           ? send('HTTP/1.0 200 OK\r\nSet-Cookie: session_id=deadbeef; Path=/\r\n\r\n{"ok":1}')
           : send(`HTTP/1.0 200 OK\r\n\r\nRemaining Attempts: ${remaining}`);
       }
@@ -179,7 +199,7 @@ function fakeHt802(password: string, remaining = 4) {
       return send('HTTP/1.0 404 Not Found\r\n\r\n');
     });
   });
-  return { server, requests };
+  return { server, requests, bodies };
 }
 
 describe('HT802 session against a fake device', () => {
@@ -199,6 +219,37 @@ describe('HT802 session against a fake device', () => {
       expect(view.sip?.exists).toBe(true);
       expect(view.lock?.locked).toBe(false); // locked=true with a negative timer means the window passed
       expect(requests).toContain('POST /cgi-bin/dologin');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('sends the username and per-page token the 1.0.x console asks for', async () => {
+    const { server, bodies } = fakeHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      expect((await device.overview()).authenticated).toBe(true);
+      const login = bodies.find((body) => body.includes('P2=')) ?? '';
+      // Posting only P2 + gnkey is rejected as a wrong password on this
+      // firmware, so the token and username must travel with it.
+      expect(login).toContain('username=admin');
+      expect(login).toContain('session_token=tok123');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('signs in to the older console that asks for P2 and gnkey alone', async () => {
+    const { server } = fakeHt802('s3cret', 4, true);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      expect((await device.overview()).authenticated).toBe(true);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -320,6 +371,147 @@ describe('refused passwords are not retried', () => {
       expect(view.authenticated).toBe(true);
       expect(requests).toContain('POST /cgi-bin/dologin');
       expect(guard.rows.get(`127.0.0.1:${port}`)).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+/**
+ * Firmware 1.0.21.4: the login POST answers with the status page itself, the
+ * FXS tabs are `config_a1`/`config_a2`, and each port's SIP account is a pile of
+ * `P<n>` inputs. This is the shape measured on the real unit at 192.168.1.45.
+ */
+function fakeModernHt802(password: string) {
+  const requests: string[] = [];
+  const session = 'modern-session';
+  const landing =
+    '<table>' +
+    '<tr><td align=right><b>MAC Address: </b></td><td>&nbsp; C0:74:AD:3E:D8:20 </td></tr>' +
+    '<tr><td>Product Model</td><td>HT802</td></tr>' +
+    '<tr><td>Serial Number</td><td>207GHQYM103ED820</td></tr>' +
+    '<tr><td>Software Version</td><td>Program -- 1.0.21.4</td></tr>' +
+    '<tr><td align=right>Port</td><td align=center>Hook</td><td>User ID</td></tr>' +
+    '<tr><td>FXS 1</td><td>On Hook</td><td>15000</td></tr>' +
+    '</table>' +
+    '<a href="config2">BASIC SETTINGS</a>' +
+    '<a href="config_a1">FXS PORT</a>' +
+    '<a href="config_a2">FXS PORT2</a>';
+  const fxs = (server: string, user: string, localPort: string, active: string, offset: boolean) =>
+    '<form>' +
+    `<input type="text" name="P${offset ? 735 : 35}" value="${user}">` +
+    `<input type="text" name="P${offset ? 740 : 40}" value="${localPort}">` +
+    `<input type="text" name="P${offset ? 747 : 47}" value="${server}">` +
+    `<input type="text" name="P${offset ? 401 : 271}" value="${active}">` +
+    '</form>';
+
+  const server = createServer((socket) => {
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('latin1');
+      const headEnd = buffer.indexOf('\r\n\r\n');
+      if (headEnd === -1) return;
+      const head = buffer.slice(0, headEnd);
+      const [, method = '', path = ''] = /^(\w+) (\S+)/.exec(head) ?? [];
+      const cookie = /cookie:\s*([^\r\n]+)/i.exec(head)?.[1] ?? '';
+      requests.push(`${method} ${path}`);
+      const send = (text: string) => socket.end(text);
+      const page = (html: string) => send(`HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n${html}`);
+
+      if (path === '/cgi-bin/api-get_lockouts') {
+        return send(
+          'HTTP/1.0 200 OK\r\n#!/bin/ash\n\r\n' +
+            '{"results":[{"locked":"false","remain":877,"accessattempt":5,"invalidattempt":0}]}',
+        );
+      }
+      if (path === '/cgi-bin/api-get_system_status') {
+        return send('HTTP/1.0 200 OK\r\n\r\n{"results":[{"vsz":"16472","command":"ata"}]}');
+      }
+      if (path === '/cgi-bin/api-get_sip') {
+        return send('HTTP/1.0 200 OK\r\n\r\n{"results":[{"exist":"false"}]}');
+      }
+      if (path === '/' || path === '/cgi-bin/login') {
+        return page(
+          `<form action="dologin" method="post"><input type="hidden" name="session_token" value="tok"><input name="username" value="admin"><input name="P2" type="password"><input name="gnkey" value="0b82"></form>`,
+        );
+      }
+      if (path === '/cgi-bin/dologin') {
+        const body = buffer.slice(headEnd + 4);
+        const params = new URLSearchParams(body);
+        const ok = Buffer.from(params.get('P2') ?? '', 'base64').toString('utf8') === password;
+        return ok
+          ? send(`HTTP/1.0 200 OK\r\nSet-Cookie: session_id=${session}; Path=/\r\n\r\n${landing}`)
+          : send('HTTP/1.0 200 OK\r\n\r\nRemaining Attempts: 4');
+      }
+      // Without the cookie this console answers a bare redirect, exactly as the
+      // real unit does when its single session is taken by another request.
+      if (path === '/cgi-bin/config_a1' && cookie.includes(session)) {
+        return page(fxs('192.168.1.30', '15000', '5060', '1', false));
+      }
+      if (path === '/cgi-bin/config_a2' && cookie.includes(session)) {
+        return page(fxs('', '', '5061', '0', true));
+      }
+      return send('HTTP/1.0 301 Moved\r\n\r\n');
+    });
+  });
+  return { server, requests };
+}
+
+describe('HT802 firmware 1.0.21.4, as measured on the real unit', () => {
+  it('reads the MAC row that neighbouring-cell scraping used to drop', async () => {
+    const { server } = fakeModernHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const view = await device.overview();
+      expect(view.state).toBe('online');
+      expect(view.identity?.serial).toBe('207GHQYM103ED820');
+      expect(view.identity?.mac).toBe('C0:74:AD:3E:D8:20');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('reports both FXS ports from their P-values, in the order the console lists them', async () => {
+    const { server } = fakeModernHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      const view = await device.overview();
+      expect(view.accounts.map((account) => account.port)).toEqual([1, 2]);
+      expect(view.accounts[0]).toMatchObject({
+        server: '192.168.1.30',
+        user: '15000',
+        active: '1',
+        localPort: '5060',
+      });
+      expect(view.accounts[1]).toMatchObject({ server: null, user: null, active: '0' });
+      expect(view.ports[0]).toMatchObject({ port: 1, enabled: true, sipUser: '15000', hook: 'On Hook' });
+      expect(view.ports[1]).toMatchObject({ port: 2, enabled: false, registration: 'no SIP user' });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('signs in again when the console answers a page with a bare redirect', async () => {
+    const { server, requests } = fakeModernHt802('s3cret');
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const device = new Ht802({ host: '127.0.0.1', port, password: 's3cret', timeoutMs: 2000 });
+      await device.login();
+      // A stale cookie: the next page read is redirected, and the client has to
+      // recover rather than silently report a port that does not exist.
+      (device as unknown as { cookie: string }).cookie = 'session_id=stale';
+      const page = await device.open('config_a1');
+      expect(page.status).toBe(200);
+      expect(page.html).toContain('P35');
+      expect(requests.filter((entry) => entry === 'POST /cgi-bin/dologin')).toHaveLength(2);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
