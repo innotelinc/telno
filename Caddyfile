@@ -1,0 +1,58 @@
+# Telno console — TLS terminator.
+#
+# Caddy listens on the LAN; the control plane stays on loopback. Certificates
+# come from Caddy's internal CA, which is trusted once on this machine (see
+# scripts/proxy.mjs) so browsers accept the console without a warning.
+#
+# Addresses come from .env so a machine with a different LAN address needs no
+# edit here:
+#   TLS_ADDRESSES=https://192.168.1.17:8443, https://localhost:8443, https://telno.local:8443
+{
+	admin off
+	# No port-80 redirect listener: nothing here is reachable over plain HTTP,
+	# and :80 is frequently reserved on Windows.
+	auto_https disable_redirects
+}
+
+{$TLS_ADDRESSES:https://localhost:8443} {
+	tls internal
+
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:{$APP_PORT:8791} {
+		# Overwrite, never append: the allowlist must see the real peer address,
+		# so a client cannot declare itself trusted with its own header.
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Port {$TLS_PORT:8443}
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}
+
+# Device provisioning over plain HTTP.
+#
+# Firmware that cannot be taught to trust a private CA still has to enroll, so
+# this listener exists for /prov and nothing else. The console API is never
+# served here, and only private address ranges may reach it — a device on the
+# LAN works, an internet host does not.
+http://:{$PROVISION_PORT:8088} {
+	@prov {
+		path /prov/*
+		remote_ip private_ranges 127.0.0.1/8 ::1
+	}
+
+	handle @prov {
+		reverse_proxy 127.0.0.1:{$APP_PORT:8791}
+	}
+
+	respond 404
+
+	log {
+		output stderr
+		format console
+	}
+}
