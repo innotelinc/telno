@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { createServer as createTlsServer, type Server as TlsServer } from 'node:https';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseResponse, cookiesFrom } from '../src/ata/raw.js';
 import {
   AUTH_BACKOFF,
@@ -657,6 +662,249 @@ describe('the refusal memory on the TLS firmware', () => {
     expect(view.state).toBe('auth');
     expect(view.locked).toBe(false);
     expect(view.notes.join(' ')).toMatch(/no further attempts are being made/);
+  });
+});
+
+let certOnce: Promise<{ key: string; cert: string }> | null = null;
+
+/**
+ * A throwaway certificate for the fake console.
+ *
+ * Nothing is committed: a private key in the tree is a secret-scanner alert every
+ * time the file is touched, and this key's only purpose is to be ignored by a
+ * client that sets `rejectUnauthorized: false`. Generated once per test process.
+ */
+function testCert(): Promise<{ key: string; cert: string }> {
+  certOnce ??= (async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'telno-tls-'));
+    const key = join(dir, 'key.pem');
+    const cert = join(dir, 'cert.pem');
+    try {
+      execFileSync(
+        'openssl',
+        ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '3650', '-subj', '/CN=HT802-test'],
+        { stdio: 'ignore' },
+      );
+    } catch {
+      throw new Error('The adaptor tests need `openssl` on PATH to mint their own certificate');
+    }
+    return { key: await readFile(key, 'utf8'), cert: await readFile(cert, 'utf8') };
+  })();
+  return certOnce;
+}
+
+/**
+ * A stand-in for the TLS console, so the write → settle → read-back contract can
+ * be exercised without a unit on the bench.
+ *
+ * It models the three things that make this path dangerous to verify by hand and
+ * easy to fake wrongly: a write is *acknowledged before it is applied*, a session
+ * the unit no longer holds answers `success` with every value blank, and a refused
+ * password answers `wrongN` carrying the attempts it has left.
+ */
+async function fakeV2Ht802({
+  password = FIXTURE_PASSWORD,
+  values: seed = {},
+  dropWrites = false,
+  blankReads = false,
+}: {
+  password?: string;
+  values?: Record<string, string>;
+  /** Acknowledge a write and store nothing, as a provisioning-locked unit does. */
+  dropWrites?: boolean;
+  /** Answer every read with success and blanks, as a console that cannot refresh. */
+  blankReads?: boolean;
+} = {}) {
+  const requests: string[] = [];
+  const writes: string[] = [];
+  const readFields: string[] = [];
+  const sessions = new Set<string>();
+  const values: Record<string, string> = {
+    P68: '1.0.21.33',
+    P199: ' 02:29:04 up 27 days',
+    serial_number: '207GHQYM103ED820',
+    phone_model: 'HT802',
+    'profile.1.sip.server.1.address': '192.168.1.30',
+    'account.1.sip.profile_id': '0',
+    'account.2.sip.profile_id': '0',
+    // Line 1 is a working Telno extension. Line 2 still holds the identity that
+    // had to be dug out of this box by hand.
+    P4060: '201',
+    P4090: '201',
+    P4180: 'Reception',
+    P4921: '1',
+    P4061: '8579901777',
+    P4091: '8579901777',
+    P4181: 'Denovo Credit Corp',
+    P4922: '1',
+    ...seed,
+  };
+  let attemptsLeft = 5;
+  let issued = 0;
+
+  const server = createTlsServer(await testCert(), (req, res) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      const path = (req.url ?? '/').split('?')[0] ?? '/';
+      requests.push(`${req.method ?? 'GET'} ${path}`);
+      const json = (payload: unknown) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+
+      if (path === '/cgi-bin/dologin') {
+        const form = new URLSearchParams(body);
+        if (form.get('password') !== password) {
+          attemptsLeft = Math.max(attemptsLeft - 1, 0);
+          return json({ response: 'fail', body: `wrong${attemptsLeft}` });
+        }
+        issued += 1;
+        const sid = `sid-${issued}`;
+        sessions.add(sid);
+        attemptsLeft = 5;
+        res.setHeader('Set-Cookie', `session-identity=${sid}; Path=/`);
+        return json({ response: 'success', body: { sid, role: 'admin', defaultAuth: false } });
+      }
+
+      if (path === '/cgi-bin/api.values.get') {
+        const form = new URLSearchParams(body);
+        const names = (form.get('request') ?? '').split(':').filter(Boolean);
+        readFields.push(...names);
+        const live = sessions.has(form.get('sid') ?? '');
+        return json({
+          response: 'success',
+          body: Object.fromEntries(
+            names.map((name) => [name, blankReads || !live ? '' : (values[name] ?? '')]),
+          ),
+        });
+      }
+
+      if (path === '/cgi-bin/api.values.post') {
+        const form = new URLSearchParams(body);
+        writes.push(body);
+        if (!sessions.has(form.get('sid') ?? '')) return json({ response: 'fail', body: 'auth' });
+        if (!dropWrites) for (const [key, value] of form) if (key !== 'sid') values[key] = value;
+        // The acknowledgement says nothing about whether anything was stored.
+        return json({ response: 'success', body: { status: 'right' } });
+      }
+
+      res.writeHead(301, { Location: '/' });
+      res.end();
+    });
+  });
+
+  return { server, requests, writes, readFields, values };
+}
+
+/**
+ * The half of this driver that cannot be checked from one hand-run against one
+ * unit: what it reports after posting a change. Every branch here either writes
+ * to a customer's live line or refuses to, so each is pinned to the unit's
+ * acknowledgement, the read-back, or the absence of a write.
+ */
+describe('the account write contract on the TLS firmware', () => {
+  const serve = async (server: TlsServer): Promise<number> => {
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return (server.address() as AddressInfo).port;
+  };
+  const shut = (server: TlsServer) => new Promise<void>((resolve) => server.close(() => resolve()));
+
+  it('reports the identity it replaced along with the read-back that confirms it', async () => {
+    const fake = await fakeV2Ht802();
+    const port = await serve(fake.server);
+    try {
+      const device = new AtaV2({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
+      const result = await device.setAccount({ account: 2, user: '202', name: 'Lift line' });
+
+      expect(result).toMatchObject({ account: 2, applied: true, user: '202', authId: '202', name: 'Lift line' });
+      // The audit's whole point: the number that was in service before this call.
+      expect(result.previous).toMatchObject({
+        user: '8579901777',
+        authId: '8579901777',
+        name: 'Denovo Credit Corp',
+        registration: 'registered',
+      });
+      // And the unit really holds it, not just the reply.
+      expect(fake.values.P4061).toBe('202');
+      expect(fake.values.P4091).toBe('202');
+      expect(result.note).toMatch(/re-registers on its own/);
+    } finally {
+      await shut(fake.server);
+    }
+  });
+
+  it('writes the P numbers and never the dotted projection the unit ignores', async () => {
+    const fake = await fakeV2Ht802();
+    const port = await serve(fake.server);
+    try {
+      const device = new AtaV2({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
+      await device.setAccount({ account: 2, user: '202', secret: 'hunter2' });
+
+      const posted = new URLSearchParams(fake.writes[0]);
+      expect(posted.get('P4061')).toBe('202');
+      expect(posted.get('P4091')).toBe('202');
+      expect(posted.get('P4121')).toBe('hunter2');
+      // A dotted write answers `{"status":"right"}` and changes nothing, which is
+      // the trap that cost this platform a long afternoon.
+      expect(fake.writes[0]).not.toContain('account.2.sip.user_id');
+      // The secret is written but never asked for: the unit would answer in clear.
+      expect(fake.readFields).not.toContain('P4121');
+    } finally {
+      await shut(fake.server);
+    }
+  });
+
+  it('does not report a write as applied when the unit acknowledges it and stores nothing', async () => {
+    const fake = await fakeV2Ht802({ dropWrites: true });
+    const port = await serve(fake.server);
+    try {
+      const device = new AtaV2({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
+      const result = await device.setAccount({ account: 2, user: '202' });
+
+      // The unit said "right" and changed nothing, which is what a locked
+      // configuration looks like from the outside.
+      expect(fake.writes).toHaveLength(1);
+      expect(result.applied).toBe(false);
+      expect(result.user).toBe('8579901777');
+      expect(result.previous?.user).toBe('8579901777');
+      expect(result.note).toMatch(/did not store it/);
+    } finally {
+      await shut(fake.server);
+    }
+  });
+
+  it('refuses to claim a previous identity it could not read', async () => {
+    const fake = await fakeV2Ht802({ blankReads: true });
+    const port = await serve(fake.server);
+    try {
+      const device = new AtaV2({ host: '127.0.0.1', port, password: FIXTURE_PASSWORD, timeoutMs: 2000 });
+      const result = await device.setAccount({ account: 2, user: '202' });
+
+      // An empty slot and a blind session are identical on the wire, so the
+      // record must say "unknown" rather than "the line was empty".
+      expect(result.previous).toBeNull();
+      expect(result.applied).toBe(false);
+      expect(result.user).toBeNull();
+      expect(result.note).toMatch(/would not read it back/);
+    } finally {
+      await shut(fake.server);
+    }
+  });
+  it('writes nothing at all when the password is refused', async () => {
+    const fake = await fakeV2Ht802({ password: FIXTURE_PASSWORD });
+    const port = await serve(fake.server);
+    try {
+      const device = new AtaV2({ host: '127.0.0.1', port, password: 'wrong', timeoutMs: 2000 });
+      await expect(device.setAccount({ account: 2, user: '202' })).rejects.toThrow(/4 attempts left/);
+      // Nothing reached the configuration: a refused login must not half-write.
+      expect(fake.writes).toHaveLength(0);
+    } finally {
+      await shut(fake.server);
+    }
   });
 });
 

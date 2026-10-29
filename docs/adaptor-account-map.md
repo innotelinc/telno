@@ -147,3 +147,17 @@ firmware answers `success` with empty strings, so "nothing was there" and "the
 read failed" look identical unless the driver asks for a canary field, which
 `accountState()` does. Recording a failed read as an empty slot would turn the
 one query an audit exists to answer into a confident wrong answer.
+## How the write contract is tested
+
+`apps/server/test/adaptor.test.ts` runs the driver against a fake TLS console on
+127.0.0.1 rather than a unit on the bench. The fake mints its own certificate at
+test time (it needs `openssl` on `PATH`; no key is committed), and it reproduces
+the three behaviours that make this path hard to verify by hand: a write is
+acknowledged before it is applied, a stale session answers `success` with blanks,
+and a refused password answers `wrongN` with the attempts left.
+
+Pinned: the identity the ledger records as replaced, the P numbers actually
+posted (and that the ignored dotted projection is never used, and the secret is
+written but never read), `applied: false` when the unit acknowledges and stores
+nothing, `previous: null` when the slot could not be read, and that a refused
+password posts no write at all.
