@@ -22,6 +22,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY web ./web
+# `npm run build` stages web/landing into the build output, so the marketing page
+# ships in this image and the app serves it at /landing.
+COPY scripts/build-landing.mjs ./scripts/
 RUN npm run build
 
 # --------------------------------------------------------------- switch -----

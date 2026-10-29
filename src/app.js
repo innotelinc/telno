@@ -3,7 +3,8 @@ import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
@@ -15,6 +16,42 @@ import { registerProvisioning } from './routes/provisioning.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'web', 'dist');
+
+/**
+ * The policy for the marketing page at the site root.
+ *
+ * It is not the console's policy: the page pulls its typeface from Google Fonts
+ * and carries three inline scripts, and the console's `script-src 'self'` would
+ * silently stop the year and the theme switch from running. The inline scripts
+ * are allowed by the hash of their own text — computed here from the file that
+ * is served, so it cannot drift from the markup — rather than by
+ * `'unsafe-inline'`. The page renders no request data, so there is nothing on it
+ * for markup injection to reach.
+ *
+ * Line endings are normalized before hashing, because that is what the browser
+ * hashes: the HTML parser turns CRLF into LF while reading the document. Hashing
+ * the file's raw Windows newlines instead produced hashes that matched nothing,
+ * and the page loaded with its inline scripts silently refused.
+ */
+function landingPolicy(html) {
+  const inline = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((match) => match[1].replace(/\r\n?/g, '\n'))
+    .filter((body) => body.trim());
+  const hashes = inline.map(
+    (body) => `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`
+  );
+  return [
+    "default-src 'self'",
+    "img-src 'self' data: blob:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    `script-src 'self'${hashes.length ? ` ${hashes.join(' ')}` : ''}`,
+    "connect-src 'self'",
+    "media-src 'self' blob: data:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+  ].join('; ');
+}
 
 export async function buildApp(opts = {}) {
   const app = Fastify({
@@ -67,7 +104,9 @@ export async function buildApp(opts = {}) {
     // The softphone needs the microphone and camera, and neither leaves the
     // page: geolocation stays off.
     reply.header('Permissions-Policy', 'geolocation=(), microphone=(self), camera=(self), display-capture=(self)');
-    if (config.isProd) {
+    // A response that already carries a policy keeps it: the site root serves
+    // the marketing page, whose policy is not this one.
+    if (config.isProd && !reply.hasHeader('content-security-policy')) {
       reply.header(
         'Content-Security-Policy',
         "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
@@ -115,6 +154,25 @@ export async function buildApp(opts = {}) {
   await registerProvisioning(app);
 
   if (existsSync(dist)) {
+    // The marketing page from `web/landing` ships inside the image and is served
+    // here, because the repository is private and GitHub Pages cannot publish a
+    // private repository on a free plan — that is what took it offline. It does
+    // not take over `/`: the install's own public site (pricing, signup, the
+    // registry search) already answers there, and a static page would replace a
+    // shop window with a brochure. Read once at boot: it is a file in this
+    // image, and its inline scripts are hashed from the exact bytes served.
+    const landingPath = join(dist, 'landing.html');
+    const landingHtml = existsSync(landingPath) ? readFileSync(landingPath, 'utf8') : '';
+    if (landingHtml) {
+      const landingCsp = landingPolicy(landingHtml);
+      const serveLanding = async (request, reply) => {
+        reply.header('Content-Security-Policy', landingCsp);
+        return reply.type('text/html').sendFile('landing.html', dist);
+      };
+      app.get('/landing', serveLanding);
+      app.get('/landing/', serveLanding);
+    }
+
     // `wildcard: true` matters: with per-file routes a hashed asset built after
     // startup is not registered, and the SPA fallback would answer a .js request
     // with index.html — the browser then refuses it as a bad MIME type.

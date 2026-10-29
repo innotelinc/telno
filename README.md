@@ -15,10 +15,10 @@ with one login and one source of truth.
 [![Runtime](https://img.shields.io/badge/runtime-Node%2024%20·%20Fastify%205-1f6feb)](package.json)
 [![Database](https://img.shields.io/badge/database-SQLite%20·%20node:sqlite-0b7285)](src/db/schema.sql)
 
-**Landing page:** [web/landing](web/landing) — the theme assertion in
-[pages.yml](.github/workflows/pages.yml) still runs on every change, but this repository is private and
-GitHub Pages needs a plan that includes it, so nothing is published to
-`innotelinc.github.io/telno` while the repository stays private ·
+**Landing page:** [web/landing](web/landing) — shipped inside the image and served by the platform at
+`/landing` (so it rides the install's own domain and TLS). The theme assertion in
+[pages.yml](.github/workflows/pages.yml) still runs on every change; GitHub Pages needs a plan that
+includes it, so nothing is published to `innotelinc.github.io/telno` while the repository stays private ·
 **Platform stack:** [innotelinc/innotel-platform-stack](https://github.com/innotelinc/innotel-platform-stack)
 
 </div>
@@ -721,11 +721,11 @@ src/                 Fastify API
   routes/            auth, registry, directory, telephony, system, workspace, systems,
                      marketing (campaigns) and portal (plans, subscriptions, signup)
 web/                 React UI (Vite, static build) + design system
-web/landing/         GitHub Pages landing site (vendored Unity theme)
+web/landing/         marketing page, staged into the build and served at /landing
 docker/              entrypoint, supervisor, base Asterisk config
 scripts/             CDP page profiler, end-to-end smoke test
 docs/                audit, architecture, API reference
-.github/workflows/   CI (smoke suite) and the Pages publish
+.github/workflows/   CI (smoke suite) and the conditional Pages publish
 ```
 
 ## Production readiness

@@ -2,6 +2,10 @@
 #
 #   https://innotelinc.github.io/telno/   (static landing)
 #
+# This is not how the page reaches production: the app stages web/landing into
+# its own build and serves it at /landing, which works while the repository is
+# private. This workflow is the fallback for a plan where Pages is available.
+#
 # The page is hand-written HTML that vendors the estate's Unity theme
 # (unity-theme.css + unity-theme.js), so there is no build step: the folder is
 # uploaded as it stands.

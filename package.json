@@ -14,7 +14,7 @@
     "start": "node src/index.js",
     "prestart": "node scripts/check-node.mjs",
     "check:node": "node scripts/check-node.mjs",
-    "build": "vite build --config web/vite.config.js",
+    "build": "vite build --config web/vite.config.js && node scripts/build-landing.mjs",
     "seed": "node src/seed.js",
     "smoke": "node scripts/smoke.mjs",
     "repair:calls": "node scripts/repair-calls.mjs",

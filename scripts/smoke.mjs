@@ -9,7 +9,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -488,6 +488,49 @@ check(
   'the console policy allows same-origin scripts, not blob scripts',
   !csp || (/script-src 'self'/.test(csp) && !/script-src[^;]*blob:/.test(csp)),
   csp || 'no policy in this mode'
+);
+
+// The marketing page from web/landing ships in the image and is served at
+// /landing: the repository is private, and GitHub Pages cannot publish a private
+// repository on a free plan. It carries inline scripts, so its policy names them
+// by hash — computed by the server from the file it serves. A page whose hashes
+// stopped matching would render with a dead theme switch and nobody would see it
+// fail, which is exactly what these three checks exist to prevent.
+const landing = await fetch(base + '/landing', { headers: { accept: 'text/html' } });
+const landingHtml = await landing.text();
+const landingCsp = landing.headers.get('content-security-policy') || '';
+check(
+  'the marketing page is served by the install',
+  landing.status === 200 && /in one container/.test(landingHtml) && /unity-theme\.css/.test(landingHtml),
+  { status: landing.status, type: landing.headers.get('content-type') }
+);
+// Recompute the hashes the way a browser does — the parser normalizes CRLF to LF
+// before hashing a script body, and hashing the raw file bytes produced a policy
+// that named the scripts and still refused every one of them.
+const inlineScripts = [...landingHtml.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+  .map((match) => match[1].replace(/\r\n?/g, '\n'))
+  .filter((body) => body.trim());
+const expectedHashes = inlineScripts.map(
+  (body) => `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`
+);
+check(
+  'the marketing page allows its own inline scripts by hash, not by unsafe-inline',
+  expectedHashes.length > 0 &&
+    expectedHashes.every((hash) => landingCsp.includes(hash)) &&
+    !/script-src[^;]*unsafe-inline/.test(landingCsp),
+  { policies: landingCsp, expectedHashes }
+);
+// The policy allows the typeface it asks for and nothing else off-origin.
+check(
+  'the marketing page policy names the font host and no other external script',
+  /style-src[^;]*fonts\.googleapis\.com/.test(landingCsp) && /font-src[^;]*fonts\.gstatic\.com/.test(landingCsp),
+  landingCsp
+);
+const themeCss = await fetch(base + '/unity-theme.css');
+check(
+  'the marketing page stylesheet is served from this origin',
+  themeCss.status === 200 && /text\/css/.test(themeCss.headers.get('content-type') || ''),
+  { status: themeCss.status, type: themeCss.headers.get('content-type') }
 );
 
 // ------------------------------------------------------------------ public --
