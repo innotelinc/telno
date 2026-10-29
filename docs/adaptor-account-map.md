@@ -70,16 +70,29 @@ the box is silent.
 
 ## Registered is not the same as ringing
 
-A well-formed extension the estate has no line for is written anyway, with a
+A well-formed extension that is not this port's to use is written anyway, with a
 warning. The unit will register it and report `registered` — the device sheet has
-no way to tell that apart from a working line — so `unknownExtensionWarning()` in
-`apps/server/src/estate.ts` asks the `lines` table and the answer rides back on
-the write as `warning`, in the audit event, and as a toast in the console.
+no way to tell that apart from a working line — so `lineAssignment()` in
+`apps/server/src/estate.ts` is asked before the write, and the answer rides back
+on the write as `warning`, into the audit event, and out as a toast in the
+console. It reports three states, and only the first is quiet:
+
+| the line today | what the operator is told |
+|---|---|
+| held by this port | nothing |
+| not assigned to any device | nothing — a free line is what a port is for |
+| no such line in the estate | `No line in this estate uses 999, so the port will register and then ring nowhere until one does.` |
+| assigned to another device | `Line 201 is assigned to Reception phone at Ground floor, so this port and Reception phone at Ground floor would both answer as 201 and a call could land on either handset.` |
+| assigned to the other port on this adaptor | `Line 201 is assigned to port 2 of this adaptor, so ports 2 and 1 would both answer as 201.` |
 
 It warns instead of refusing because the estate's own 201 and 202 sat on this
 hardware before the platform had a record of them, and an operator may be
 deliberately ahead of the line inventory. Refusing would make the adaptor sheet
 unable to do the job it exists for.
+
+The wording avoids claiming which handset wins. Two registrations of one address
+is a race the SIP server arbitrates, not something the platform can predict, and
+a message that guessed would send the operator looking in the wrong place.
 
 ## Measured on a real unit
 

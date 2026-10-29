@@ -4,7 +4,7 @@ import { DEVICE_MODELS, extensionProblem, isModelKey, normalizeExtension } from 
 import { AtaUnsupported } from './ata/device.js';
 import { env } from './env.js';
 import { forgetAdaptor, probeAdaptor, rebootAdaptor, setAdaptorAccount } from './ata/probe.js';
-import { unknownExtensionWarning } from './estate.js';
+import { lineAssignment } from './estate.js';
 import {
   db,
   hashPassword,
@@ -985,12 +985,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return bad(reply, extensionProblem(raw) ?? 'an extension is required', 400);
     }
 
-    // The box reports a line as registered whether or not anything behind the
-    // switch answers to that number, so the estate is asked before the write and
-    // the operator is told afterwards. Deliberately not a refusal: an operator
-    // may be ahead of the line inventory, and the hardware already holds numbers
-    // the platform learned about later.
-    const warning = unknownExtensionWarning(db, user);
+    // The box reports a line as registered whether or not the extension is this
+    // port's to use, so the estate is asked before the write and the operator is
+    // told afterwards. Deliberately not a refusal: an operator may be ahead of
+    // the line inventory, and the hardware already holds numbers the platform
+    // learned about later. A slot that is not a number would match nothing and
+    // invent a warning, so it is only asked when it means something; the driver
+    // owns the upper bound, because firmware knows how many slots it has.
+    const assignment =
+      Number.isInteger(account) && account >= 1
+        ? lineAssignment(db, { extension: user, deviceId: id, slot: account })
+        : { warning: null, owner: null };
+    const warning = assignment.warning;
 
     try {
       const result = await setAdaptorAccount(target, {
@@ -1022,7 +1028,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           fromName: was?.name ?? null,
           fromRegistration: was?.registration ?? null,
           readableBefore: was !== null,
-          unknownExtension: Boolean(warning),
+          unknownExtension: assignment.owner === null,
+          assignedTo: assignment.owner,
           to: result.user,
         },
       );
