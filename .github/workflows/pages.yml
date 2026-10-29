@@ -9,6 +9,13 @@
 # Requires Pages to be enabled once: repo Settings -> Pages -> Source:
 # "GitHub Actions". After that, every push to main that touches web/landing
 # republishes. workflow_dispatch works too.
+#
+# This repository is private, and GitHub will not publish Pages from a private
+# repository on a plan that does not include it (GitHub Free allows Pages on
+# public repositories only). The page is still built and asserted here on every
+# landing change — only the upload is skipped, with a notice. Give the account a
+# plan with Pages, or make the repository public again, and publishing resumes
+# on the next run without a code change.
 
 name: GitHub Pages
 
@@ -41,9 +48,20 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Configure Pages
+        id: configure
+        # A refusal here is a fact about the account (private repository, no
+        # Pages entitlement), not a fault in the page, so it must not paint every
+        # push that touches the landing folder red. The assertion below still
+        # runs; only the upload waits on this.
         uses: actions/configure-pages@v6
+        continue-on-error: true
         with:
           enablement: true
+
+      - name: Say why nothing was published
+        if: steps.configure.outcome != 'success'
+        run: |
+          echo "::notice title=Landing page checked but not published::GitHub Pages is unavailable for this repository — a private repository needs a plan that includes Pages. web/landing passed its checks; the upload was skipped."
 
       - name: Assert the page carries the theme
         # A landing page that lost its stylesheet renders as unstyled text and
@@ -54,10 +72,12 @@ jobs:
           test -s web/landing/unity-theme.css
 
       - name: Upload static site
+        if: steps.configure.outcome == 'success'
         uses: actions/upload-pages-artifact@v5
         with:
           path: web/landing
 
       - name: Deploy to GitHub Pages
+        if: steps.configure.outcome == 'success'
         id: deployment
         uses: actions/deploy-pages@v5

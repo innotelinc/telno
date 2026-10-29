@@ -11,12 +11,14 @@ same image that answers a call also answers *who is this number?* — on six pub
 with one login and one source of truth.
 
 [![CI](https://github.com/innotelinc/telno/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/telno/actions/workflows/ci.yml)
-[![Pages](https://github.com/innotelinc/telno/actions/workflows/pages.yml/badge.svg)](https://github.com/innotelinc/telno/actions/workflows/pages.yml)
 [![theme: Unity](https://img.shields.io/badge/theme-Unity-6366f1)](https://github.com/innotelinc/innotel-platform-stack/tree/main/standards/unity)
 [![Runtime](https://img.shields.io/badge/runtime-Node%2024%20·%20Fastify%205-1f6feb)](package.json)
 [![Database](https://img.shields.io/badge/database-SQLite%20·%20node:sqlite-0b7285)](src/db/schema.sql)
 
-**Landing page:** [innotelinc.github.io/telno](https://innotelinc.github.io/telno) ·
+**Landing page:** [web/landing](web/landing) — the theme assertion in
+[pages.yml](.github/workflows/pages.yml) still runs on every change, but this repository is private and
+GitHub Pages needs a plan that includes it, so nothing is published to
+`innotelinc.github.io/telno` while the repository stays private ·
 **Platform stack:** [innotelinc/innotel-platform-stack](https://github.com/innotelinc/innotel-platform-stack)
 
 </div>
