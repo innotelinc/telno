@@ -21,19 +21,59 @@ import https from 'node:https';
  *    then admits it could not read.
  */
 
-const DEFAULT_FIELDS = [
+/**
+ * Where the SIP identity actually lives on this firmware.
+ *
+ * The console's own pages are the source: `json/contents/dect_acct_settings.js`
+ * (fetched from the unit, not guessed) lists the columns of the account table as
+ * SIP_USER, SIP_AUTH, SIP_PASS, SIP_NAME, SIP_PROFILE — and every cell is either
+ * a `P` number or a dotted name. Reading both settled which one is writable:
+ *
+ *   P4060 … P4069   SIP user id      the value the unit registers as
+ *   P4090 … P4099   authenticate id
+ *   P4120 … P4129   authenticate password (reads back in clear text)
+ *   P4180 … P4189   display name
+ *   P4921 … P4930   registration state   1 = registered, 2 = not registered
+ *
+ * The dotted form (`account.1.sip.user_id`) is a projection of the same rows:
+ * it reads back correctly, and a write to it answers `{"status":"right"}` while
+ * changing nothing. That is the trap this map exists to avoid — the platform
+ * spent a while writing names that the firmware silently ignored.
+ *
+ * Account 1 is the unit's first line, and on a two-port unit that is the first
+ * port; the same index runs across all five blocks, which is why the tables
+ * start at 4060/4090/4120/4180/4921 rather than at round numbers.
+ */
+export const ACCOUNT_SLOTS = 10;
+const ACCOUNT_BLOCK = { user: 4060, authId: 4090, secret: 4120, name: 4180 };
+const ACCOUNT_STATUS = 4921;
+const STATUS_TEXT = { 1: 'registered', 2: 'not registered' };
+
+/** `P4060` for account 1, `P4061` for account 2, … */
+const slot = (block, index) => `P${block + index}`;
+
+const IDENTITY_FIELDS = [
   'P68', // software version
-  'P271', // FXS 1 account active
-  'P401', // FXS 2 account active
-  'P35', // FXS 1 SIP user id
-  'P735', // FXS 2 SIP user id
-  'P47', // FXS 1 SIP server
-  'P747', // FXS 2 SIP server
-  'P40', // FXS 1 local SIP port
-  'P740', // FXS 2 local SIP port
   'P199', // uptime, as the unit reports it (` 02:29:04 up 27 days`)
   'serial_number',
+  'phone_model',
 ];
+
+const PROFILE_FIELDS = [1, 2, 3, 4].map((n) => `profile.${n}.sip.server.1.address`);
+
+const accountFields = () => {
+  const names = [...IDENTITY_FIELDS, ...PROFILE_FIELDS];
+  for (let i = 0; i < ACCOUNT_SLOTS; i += 1) {
+    names.push(slot(ACCOUNT_BLOCK.user, i), slot(ACCOUNT_BLOCK.authId, i), slot(ACCOUNT_BLOCK.name, i));
+    names.push(`account.${i + 1}.sip.profile_id`, `P${ACCOUNT_STATUS + i}`);
+  }
+  // The password is never read: the API answers it in clear text, and nothing
+  // in this view needs it.
+  return names;
+};
+
+/** Named parameters read at idle speed; kept as a list so callers can extend it. */
+const DEFAULT_FIELDS = accountFields();
 
 export class AtaV2Error extends Error {
   constructor(message, code = 'ata_v2') {
@@ -225,10 +265,12 @@ export class AtaV2 {
       const text = String(raw).trim();
       return text === '' ? null : text;
     };
-    const active = (key) => String(values[key] ?? '').trim() === '1';
 
     view.identity = {
-      model: 'HT802',
+      // Reported, not assumed. This unit answers `DP750` — a DECT base with ten
+      // account slots and no FXS ports at all — and saying "HT802" here made a
+      // whole console read as if it had two analog ports that never existed.
+      model: value('phone_model') || 'unknown',
       firmware: value('P68'),
       serial: value('serial_number'),
       mac: null,
@@ -243,33 +285,115 @@ export class AtaV2 {
       ip: this.host,
     };
 
+    const profileServers = {};
+    for (const n of [1, 2, 3, 4]) {
+      const address = value(`profile.${n}.sip.server.1.address`);
+      if (address) profileServers[String(n)] = address;
+    }
+
+    // One row per account the unit actually holds. An empty user id is an empty
+    // slot, not a broken port: this box has ten of them and ships with two used.
     const ports = [];
     const accounts = [];
-    const map = [
-      { port: 1, on: 'P271', user: 'P35', server: 'P47', local: 'P40' },
-      { port: 2, on: 'P401', user: 'P735', server: 'P747', local: 'P740' },
-    ];
-    for (const entry of map) {
-      const enabled = active(entry.on);
-      const user = value(entry.user);
-      const server = value(entry.server);
+    for (let i = 0; i < ACCOUNT_SLOTS; i += 1) {
+      const user = value(slot(ACCOUNT_BLOCK.user, i));
+      if (!user) continue;
+      const authId = value(slot(ACCOUNT_BLOCK.authId, i));
+      const name = value(slot(ACCOUNT_BLOCK.name, i));
+      const code = value(`P${ACCOUNT_STATUS + i}`);
+      const profileId = value(`account.${i + 1}.sip.profile_id`);
+      const registered = code === '1';
+      const registration = STATUS_TEXT[code] || (code ? `state ${code}` : 'not registered');
       ports.push({
-        port: entry.port,
-        enabled,
+        port: i + 1,
+        label: `Line ${i + 1}`,
+        enabled: true,
         hook: null,
-        // The API exposes configuration, not live registration: saying
-        // "registered" here would be inventing a fact.
-        registration: user ? (enabled ? 'configured' : 'disabled') : 'no SIP user',
+        // This firmware *does* report registration, per account, so the console
+        // can finally say "registered" instead of "configured".
+        registration,
+        registered,
         sipUser: user,
       });
-      if (user || server) {
-        accounts.push({ port: entry.port, user, server, localPort: value(entry.local), active: enabled ? '1' : '0', name: null });
-      }
+      accounts.push({
+        port: i + 1,
+        user,
+        authId,
+        name,
+        // `profile_id` is zero-based here: 0 is profile 1.
+        server: profileId === null ? null : profileServers[String(Number(profileId) + 1)] || null,
+        profileId: profileId === null ? null : String(Number(profileId) + 1),
+        localPort: null,
+        // What the old table called "active": the account is in service when it
+        // is registered, which is the only meaning an operator cares about.
+        active: registered ? '1' : '0',
+        registered,
+        registration,
+      });
     }
     view.ports = ports;
     view.accounts = accounts;
     view.tookMs = Date.now() - started;
     return view;
+  }
+
+  /**
+   * Write one account row, then read it back.
+   *
+   * Only the `P` numbers in `ACCOUNT_BLOCK` are written. The dotted names are
+   * accepted by `api.values.post` — it answers `{"status":"right"}` — and do
+   * nothing at all, so a caller that "succeeded" against them leaves a line that
+   * still registers as whatever was there before. The read-back is the contract:
+   * a write is only reported as applied when the unit returns the new value.
+   *
+   * The password is written but never read back or returned.
+   */
+  async setAccount({ account, user, authId, secret, name } = {}) {
+    const index = Number(account) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= ACCOUNT_SLOTS) {
+      throw new AtaV2Error(`Account must be 1–${ACCOUNT_SLOTS}`, 'ata_account');
+    }
+    const id = String(user ?? '').trim();
+    if (!id) throw new AtaV2Error('A SIP user id is required: it is what the line registers as', 'ata_account');
+
+    if (!this.sid) await this.login();
+
+    const fields = [
+      [slot(ACCOUNT_BLOCK.user, index), id],
+      [slot(ACCOUNT_BLOCK.authId, index), String(authId ?? id).trim() || id],
+    ];
+    if (name !== undefined && name !== null) fields.push([slot(ACCOUNT_BLOCK.name, index), String(name)]);
+    if (secret) fields.push([slot(ACCOUNT_BLOCK.secret, index), String(secret)]);
+
+    const form = [...fields.map(([key, val]) => `${key}=${encodeURIComponent(val)}`), `sid=${encodeURIComponent(this.sid)}`].join('&');
+    const res = await this.#post('/cgi-bin/api.values.post', form);
+    if (res.json?.response !== 'success') {
+      throw new AtaV2Error(`The device refused the account write (${String(res.json?.body ?? res.status)})`, 'ata_account');
+    }
+
+    // A write is acknowledged before it is applied, so give the config a moment
+    // and then read the numbers back rather than trusting the acknowledgement.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const keys = [slot(ACCOUNT_BLOCK.user, index), slot(ACCOUNT_BLOCK.authId, index), slot(ACCOUNT_BLOCK.name, index), `P${ACCOUNT_STATUS + index}`];
+    const { values } = await this.values([...IDENTITY_FIELDS, ...keys]);
+    const read = (key) => {
+      const text = String(values[key] ?? '').trim();
+      return text === '' ? null : text;
+    };
+
+    const applied =
+      read(slot(ACCOUNT_BLOCK.user, index)) === id && read(slot(ACCOUNT_BLOCK.authId, index)) === (String(authId ?? id).trim() || id);
+    return {
+      account: index + 1,
+      applied,
+      user: read(slot(ACCOUNT_BLOCK.user, index)),
+      authId: read(slot(ACCOUNT_BLOCK.authId, index)),
+      name: read(slot(ACCOUNT_BLOCK.name, index)),
+      registration: STATUS_TEXT[read(`P${ACCOUNT_STATUS + index}`)] || 'not registered',
+      note: applied
+        ? 'The unit holds the new identity. It re-registers on its own; no reboot is needed.'
+        : 'The device acknowledged the write but did not store it. Its configuration is likely locked by provisioning.',
+    };
   }
 }
 

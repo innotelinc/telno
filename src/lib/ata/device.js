@@ -79,6 +79,21 @@ export class AtaDevice {
     return impl.page(id);
   }
 
+  /**
+   * Set the SIP identity of one line.
+   *
+   * Only the TLS firmware exposes a writable account block; the mini_httpd units
+   * take their settings as a form post that this client has not measured, so this
+   * refuses rather than pretending.
+   */
+  async setAccount(payload = {}) {
+    const impl = await this.detect();
+    if (this.firmware !== FIRMWARE.v2) {
+      throw new AtaUnsupported('This firmware takes its SIP account as a configuration form, not as an API write. Use its own page.');
+    }
+    return impl.setAccount(payload);
+  }
+
   async reboot() {
     const impl = await this.detect();
     if (this.firmware === FIRMWARE.v2) {

@@ -134,9 +134,13 @@ export default function Device() {
           : 'the adaptor is not answering';
   // The V2 firmware exposes configuration, not live registration, so counting
   // "registered" there would be inventing a fact. Count what is known instead.
-  const configured = (state?.ports || []).filter((port) => port.sipUser).length;
-  const registered = (state?.ports || []).filter((port) => /registered|ok|idle|off hook|on hook/i.test(port.registration || '')).length;
-  const portScore = state?.firmware === 'v2' ? configured : registered;
+  // The TLS firmware reports registration per account, so "registered" is a fact
+  // there; the older one only reports settings, and counting those as registered
+  // would be inventing one.
+  const registered = (state?.ports || []).filter((port) =>
+    port.registered === undefined ? /registered|ok|idle|off hook|on hook/i.test(port.registration || '') : port.registered
+  ).length;
+  const portScore = registered;
 
   const reboot = async () => {
     setBusy('reboot');
@@ -247,24 +251,25 @@ export default function Device() {
       </Card>
 
       <div className="grid stats">
-        <Stat label="Model" value={field(identity.model, 'HT802')} foot="Reported by the unit" />
+        <Stat label="Model" value={field(identity.model, '—')} foot="Reported by the unit" />
         <Stat label="Firmware" value={field(identity.firmware, '—')} foot={identity.bootloader ? `boot ${identity.bootloader}` : 'Program version'} />
         <Stat
-          label="FXS ports"
-          value={state?.ports?.length ? `${portScore}/${state.ports.length}` : '2'}
-          foot={state?.ports?.length ? (state?.firmware === 'v2' ? 'With an extension' : 'Registered') : 'Two analog lines'}
+          // A DECT base has lines, not FXS ports, and it says so in `phone_model`.
+          label={identity.model && !/^HT/i.test(identity.model) ? 'Lines' : 'FXS ports'}
+          value={state?.ports?.length ? `${portScore}/${state.ports.length}` : '—'}
+          foot={state?.ports?.length ? 'Registered with the switch' : 'No line configured'}
           tone={state?.ports?.length && portScore < state.ports.length ? 'var(--warning)' : undefined}
         />
         <Stat label="Uptime" value={field(identity.uptime, '—')} foot={identity.serial ? `S/N ${identity.serial}` : 'Since last restart'} />
       </div>
 
-      <Card title="Ports" subtitle="One analog telephone per port; each is its own SIP registration">
+      <Card title="Ports" subtitle="Each line is its own SIP registration, as the unit reports it">
         {state?.ports?.length ? (
           <div className="grid two">
             {state.ports.map((port) => {
-              const ok = /registered|ok|idle|on hook/i.test(port.registration || '');
+              const ok = port.registered === undefined ? /^(?!not )registered|ok|idle|on hook/i.test(port.registration || '') : port.registered;
               return (
-                <Card key={port.port} title={`FXS ${port.port}`} subtitle={port.sipUser ? `Extension ${port.sipUser}` : 'No extension reported'}>
+                <Card key={port.port} title={port.label || `FXS ${port.port}`} subtitle={port.sipUser ? `Extension ${port.sipUser}` : 'No extension reported'}>
                   <div className="stack">
                     <div className="row" style={{ gap: 8 }}>
                       <Badge tone={ok ? 'success' : 'warning'} dot={ok ? 'live' : 'warn'}>
@@ -274,14 +279,14 @@ export default function Device() {
                     </div>
                     <p className="tiny dim">
                       {ok
-                        ? 'Registered with the switch. A call to this extension rings the telephone on this port.'
+                        ? 'Registered with the switch. A call to this extension rings the telephone on this line.'
                         : port.registration === 'no SIP user'
-                          ? 'No extension is configured on this port. Send it a Telno profile from Estate.'
+                          ? 'No extension is configured on this line. Set one from Estate, or write it with a POST to /ata/accounts.'
                           : port.registration === 'configured'
                             ? `Holds extension ${port.sipUser} and will register with it. This firmware reports settings, not live registration, so the switch is where to confirm it came up.`
                             : port.registration === 'disabled'
-                              ? 'The unit has this port switched off, so no extension on it can register.'
-                              : 'Not registered. Send it a Telno profile from Estate, then reboot the adaptor.'}
+                              ? 'The unit has this line switched off, so no extension on it can register.'
+                              : 'Not registered. The unit holds the identity but the switch is refusing it — check the extension and its password.'}
                     </p>
                   </div>
                 </Card>
@@ -297,29 +302,37 @@ export default function Device() {
         )}
       </Card>
 
-      <Card title="SIP accounts" subtitle="What the adaptor registers as, per port" bodyClass="tight">
+      <Card title="SIP accounts" subtitle="What the unit registers as, per line" bodyClass="tight">
         {state?.accounts?.length ? (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>Port</th>
+                  <th>Line</th>
                   <th>Extension</th>
+                  <th>Auth id</th>
                   <th>SIP server</th>
                   <th>Display name</th>
-                  <th>Local port</th>
-                  <th>Active</th>
+                  <th>Registration</th>
                 </tr>
               </thead>
               <tbody>
                 {state.accounts.map((account) => (
                   <tr key={account.port}>
-                    <td className="tiny">FXS {account.port}</td>
+                    <td className="tiny">Line {account.port}</td>
                     <td className="tiny mono">{field(account.user, '—')}</td>
+                    <td className="tiny mono">{field(account.authId, '—')}</td>
                     <td className="tiny mono">{field(account.server, '—')}</td>
                     <td className="tiny">{field(account.name, '—')}</td>
-                    <td className="tiny mono">{field(account.localPort, '—')}</td>
-                    <td>{account.active ? <Badge tone={/1|yes|enabled/i.test(account.active) ? 'success' : 'neutral'}>{account.active}</Badge> : <span className="tiny dim">—</span>}</td>
+                    <td>
+                      {account.registration ? (
+                        <Badge tone={account.registered ? 'success' : 'warning'} dot={account.registered ? 'live' : 'warn'}>
+                          {account.registration}
+                        </Badge>
+                      ) : (
+                        <span className="tiny dim">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

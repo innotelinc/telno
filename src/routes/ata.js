@@ -165,6 +165,42 @@ export default async function ataRoutes(app) {
     };
   });
 
+  /**
+   * Put an extension on one of the unit's lines, or clear one.
+   *
+   * This is the write the console could not do before: the account fields it was
+   * aiming at (`account.1.sip.user_id`) are read-only projections, so every write
+   * was acknowledged and dropped. The driver now writes the parameters the unit
+   * actually registers from, and reports what it read back — never just that the
+   * device said `right`.
+   */
+  app.post('/ata/accounts', { preHandler: requireWrite }, async (request) => {
+    const body = request.body || {};
+    const target = resolveTarget(body.id || request.query?.id);
+    const extension = String(body.extension ?? body.user ?? '').trim();
+    if (!extension) throw badRequest('An extension is required: it is the SIP user id the line registers as');
+
+    const secret = body.secret !== undefined ? String(body.secret) : undefined;
+    const result = await deviceFor(target.host, target.port).setAccount({
+      account: body.account ?? 1,
+      user: extension,
+      authId: body.authId,
+      secret,
+      name: body.name,
+    });
+
+    cache.delete(`${target.host}:${target.port}`);
+    logEvent({
+      actor: request.account?.email || 'api',
+      action: 'estate.ata_account_set',
+      subject: target.name || target.host,
+      // The secret is never logged, and never returned.
+      detail: `line ${result.account} set to ${result.user} at ${target.host}:${target.port}${result.applied ? '' : ' (not applied by the device)'}`,
+      ip: request.ip,
+    });
+    return { target: { host: target.host, port: target.port }, ...result };
+  });
+
   app.post('/ata/reboot', { preHandler: requireWrite }, async (request) => {
     const target = resolveTarget(request.body?.id || request.query?.id);
     const result = await deviceFor(target.host, target.port).reboot();
