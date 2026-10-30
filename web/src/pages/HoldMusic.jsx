@@ -61,12 +61,16 @@ export default function HoldMusic() {
       const result = await api.get('/hold-music');
       setData(result);
       // The form follows the install's voice default and the applied style, so a
-      // second track sounds like the one already on the switch.
-      setForm((current) => ({
-        ...current,
-        voice: current.voice || result.status?.defaultVoice || 'slt',
-        style: result.status?.applied?.style || current.style,
-      }));
+      // second track sounds like the one already on the switch. A voice that the
+      // engine no longer offers (the gateway went away, or arrived) is swapped
+      // for the default rather than sent back and rejected.
+      setForm((current) => {
+        const voices = result.speeches?.voices || [];
+        const voice = voices.some((entry) => entry.value === current.voice)
+          ? current.voice
+          : result.speeches?.defaultVoice || result.status?.defaultVoice || 'slt';
+        return { ...current, voice, style: result.status?.applied?.style || current.style };
+      });
     } catch (err) {
       toast.error('Could not load hold music', err.message);
     } finally {
@@ -94,10 +98,15 @@ export default function HoldMusic() {
       setData((current) => ({ ...current, items: [result.item, ...(current?.items || []).filter((entry) => entry.id !== result.item.id)] }));
       setPlaying(result.item);
       const words = result.render.announcements;
-      toast.success(
-        `${result.item.name} is ready`,
-        words ? `${duration(result.render.seconds)} — the message plays ${words} time${words > 1 ? 's' : ''}` : 'Music only, no message'
-      );
+      const engine = result.render.engine === 'gateway' ? 'natural voice' : result.render.engine === 'flite' ? 'offline voice' : null;
+      const detail = words
+        ? `${duration(result.render.seconds)} — the message plays ${words} time${words > 1 ? 's' : ''}${engine ? `, read by the ${engine}` : ''}`
+        : 'Music only, no message';
+      if (result.render.fallback) {
+        toast.error('The natural voice was unavailable', `${result.render.fallback}. ${detail}, using the offline voice.`);
+      } else {
+        toast.success(`${result.item.name} is ready`, detail);
+      }
     } catch (err) {
       toast.error('Could not generate that track', err.message);
     } finally {

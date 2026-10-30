@@ -122,6 +122,13 @@ export const config = {
     // IP in ICE candidates and media would never arrive.
     externalAddress: env.ASTERISK_EXTERNAL_ADDRESS || '',
     localNets: list(env.ASTERISK_LOCAL_NETS, '172.16.0.0/12,10.0.0.0/8,192.168.0.0/16'),
+    // Whether the switch advertises its public address in SIP *headers* too.
+    // Media always does (a carrier cannot send RTP to 192.168.x); signaling is
+    // opt-in because rewriting the Contact of a REGISTER only helps when UDP
+    // 5060 is actually forwarded to this host. Behind a NAT without that
+    // mapping, a rewritten Contact is a promise the box cannot keep, and
+    // VoIP.ms answers it by dropping the registration.
+    sipExternalSignaling: bool(env.SIP_EXTERNAL_SIGNALING, false),
     // The SIP domain the switch puts in From/To headers. It has to be a name
     // and not the container's hostname: Docker names containers with a hex id,
     // and a SIP parser reads a digit-leading host as a malformed IPv4 address
@@ -364,6 +371,15 @@ export const config = {
     baseUrl: (env.LLM_BASE_URL || 'https://gateway.innotel.us/v1').replace(/\/+$/, ''),
     model: env.LLM_MODEL || 'gpt-4o-mini',
     timeoutMs: Math.max(3000, int(env.LLM_TIMEOUT_MS, 30000)),
+    // Speech is its own OpenAI-compatible endpoint, and it is often served by a
+    // different route than chat: OmniRoute proxies `/audio/speech` to whichever
+    // provider it holds a key for, and that may not be the same one answering
+    // completions. Pointing it separately means a gateway that does both needs
+    // only the key, while one that does not can still keep the local voice.
+    ttsUrl: (env.LLM_TTS_URL || env.LLM_BASE_URL || 'https://gateway.innotel.us/v1').replace(/\/+$/, ''),
+    ttsModel: env.LLM_TTS_MODEL || 'gpt-4o-mini-tts',
+    ttsVoice: env.LLM_TTS_VOICE || 'nova',
+    ttsTimeoutMs: Math.max(3000, int(env.LLM_TTS_TIMEOUT_MS, 25000)),
   },
 
   notify: {

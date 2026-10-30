@@ -20,7 +20,7 @@ import {
   setAppliedHoldMusic,
   trackFile,
 } from '../lib/holdMusic.js';
-import { DEFAULT_VOICE, VOICES, speak } from '../lib/speech.js';
+import { DEFAULT_VOICE, DEFAULT_NATURAL_VOICE, NATURAL_VOICES, VOICES, speak, speechStatus } from '../lib/speech.js';
 import * as v from '../lib/validate.js';
 
 /**
@@ -32,7 +32,9 @@ import * as v from '../lib/validate.js';
  */
 
 const styleValues = STYLES.map((entry) => entry.value);
-const voiceValues = VOICES.map((entry) => entry.value);
+// Both engines' voices are accepted: a track saved before the gateway was
+// configured keeps its offline voice, and a natural one is validated too.
+const voiceValues = [...NATURAL_VOICES, ...VOICES].map((entry) => entry.value);
 
 const nameFor = (raw, message) => {
   const given = String(raw || '').trim();
@@ -47,13 +49,16 @@ export default async function holdMusicRoutes(app) {
     await app.authenticate(request);
   });
 
-  app.get('/hold-music', async () => ({
-    status: holdMusicStatus(),
-    items: listHoldMusic(),
-    // What the console shows under the message box, so an operator can see that
-    // the track will be long enough for the words before generating it.
-    speeches: { voices: VOICES.filter((voice) => voiceValues.includes(voice.value)), defaultVoice: DEFAULT_VOICE },
-  }));
+  app.get('/hold-music', async () => {
+    const status = holdMusicStatus();
+    return {
+      status,
+      items: listHoldMusic(),
+      // The voices the engine that will actually speak offers, so the picker and
+      // the engine cannot disagree.
+      speeches: { voices: status.voice.voices, defaultVoice: status.voice.defaultVoice },
+    };
+  });
 
   /** Render one track and keep it as a draft. */
   app.post('/hold-music', { preHandler: app.requireRole('owner', 'operator') }, async (request, reply) => {
@@ -61,7 +66,12 @@ export default async function holdMusicRoutes(app) {
     const message = String(v.str(body.message, { name: 'message', max: MAX_MESSAGE, required: false, fallback: '' }) || '').trim();
     const style = v.str(body.style, { name: 'style', max: 20, required: false, fallback: DEFAULT_STYLE });
     if (!styleValues.includes(style)) throw badRequest(`Unknown style. Use one of: ${styleValues.join(', ')}`);
-    const voice = v.str(body.voice, { name: 'voice', max: 20, required: false, fallback: DEFAULT_VOICE });
+    const voice = v.str(body.voice, {
+      name: 'voice',
+      max: 20,
+      required: false,
+      fallback: speechStatus().engine === 'gateway' ? DEFAULT_NATURAL_VOICE : DEFAULT_VOICE,
+    });
     if (!voiceValues.includes(voice)) throw badRequest(`Unknown voice. Use one of: ${voiceValues.join(', ')}`);
     const seconds = v.integer(body.seconds, {
       name: 'seconds',
@@ -79,10 +89,10 @@ export default async function holdMusicRoutes(app) {
     // track of music with no words in it.
     let audio = null;
     if (message) {
-      const spoken = speak({ text: message, voice });
+      const spoken = await speak({ text: message, voice });
       if (!spoken.ok) {
         throw badRequest(
-          `${spoken.error}. The generator needs the speech engine in the image — rebuild it, or leave the message empty to produce music only.`
+          `${spoken.error}. Fix the voice under Settings → AI and subscriptions, or leave the message empty to produce music only.`
         );
       }
       audio = spoken;
@@ -111,8 +121,9 @@ export default async function holdMusicRoutes(app) {
       action: 'hold_music.generated',
       subject: name,
       detail: `${Math.round(rendered.seconds)}s, ${style}, ${rendered.announcements} announcement(s)${
-        audio ? `, voice ${audio.voice}` : ', music only'
+        audio ? `, ${audio.engine} voice ${audio.voice}` : ', music only'
       }`,
+      ...(audio?.fallbackFrom ? { fallback: audio.fallbackFrom } : {}),
       ip: request.ip,
     });
 
@@ -125,6 +136,12 @@ export default async function holdMusicRoutes(app) {
         announcements: rendered.announcements,
         messageSeconds: rendered.messageSeconds,
         peak: Number(rendered.peak.toFixed(3)),
+        // Which engine spoke, and why it was not the preferred one if it was
+        // not. The console says this out loud rather than leaving the operator
+        // to notice a robotic voice.
+        engine: audio?.engine || null,
+        voice: audio?.voice || null,
+        fallback: audio?.fallbackFrom || null,
       },
     };
   });

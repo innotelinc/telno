@@ -277,8 +277,13 @@ function CreateTrunk({ onClose, onSaved }) {
           label="From user"
           value={form.fromUser}
           onChange={(event) => setForm({ ...form, fromUser: event.target.value })}
-          placeholder="optional"
+          placeholder={kind === 'voipms' ? 'subaccount, or a DID you own' : 'optional'}
           className="mono"
+          hint={
+            kind === 'voipms'
+              ? 'What the carrier sees as the caller. A number the account owns is always accepted; the subaccount works only if its caller ID is set in the VoIP.ms portal. Left blank it uses the username.'
+              : 'Left blank it uses the username, never the endpoint name — a carrier refuses a call that presents one.'
+          }
         />
         <Input
           label="Codecs"

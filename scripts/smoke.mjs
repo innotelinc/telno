@@ -53,6 +53,33 @@ let stripeStub = null;
 const stripeCalls = [];
 let mailjetStub = null;
 const mailjetCalls = [];
+// The voice route's stand-in, and what the generator asked it to say.
+let ttsStub = null;
+const ttsCalls = [];
+
+/** A 24 kHz mono WAV, the shape a hosted speech endpoint answers with. */
+function ttsWav(seconds = 1.4, rate = 24000) {
+  const frames = Math.round(seconds * rate);
+  const buffer = Buffer.alloc(44 + frames * 2);
+  buffer.write('RIFF', 0, 'ascii');
+  buffer.writeUInt32LE(36 + frames * 2, 4);
+  buffer.write('WAVE', 8, 'ascii');
+  buffer.write('fmt ', 12, 'ascii');
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(rate, 24);
+  buffer.writeUInt32LE(rate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36, 'ascii');
+  buffer.writeUInt32LE(frames * 2, 40);
+  for (let i = 0; i < frames; i += 1) {
+    const envelope = Math.min(1, i / 200, (frames - i) / 200);
+    buffer.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 220 * i) / rate) * 12000 * envelope), 44 + i * 2);
+  }
+  return buffer;
+}
 // Set to make the stub report a different registered webhook URL, so the
 // connection test's "points at an old host" path is exercised.
 let stripeEndpointUrl = '';
@@ -208,6 +235,27 @@ if (!base) {
   await new Promise((resolve) => mailjetStub.listen(0, '127.0.0.1', resolve));
   const mailjetPort = mailjetStub.address().port;
 
+  // Voice stand-in: `/audio/speech` answered with a real WAV, so the hold-music
+  // generator's natural-voice path is exercised without a provider key. 24 kHz
+  // on purpose — that is what the hosted engines return, and it makes the
+  // resample to the switch's 8 kHz part of the test instead of an assumption.
+  ttsStub = createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      ttsCalls.push({
+        path: request.url,
+        body: Buffer.concat(chunks).toString('utf8'),
+        authorization: request.headers.authorization || '',
+      });
+      const wav = ttsWav();
+      response.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length });
+      response.end(wav);
+    });
+  });
+  await new Promise((resolve) => ttsStub.listen(0, '127.0.0.1', resolve));
+  const ttsPort = ttsStub.address().port;
+
   // The run owns its database. Without this the suite tested whatever
   // `./data` happened to hold on the machine it ran on: a fresh clone bootstraps
   // `admin@telno.local` with a generated password, so the owner sign-in below
@@ -272,6 +320,11 @@ if (!base) {
     // Mailjet goes to a live stub: the point of this provider is the request
     // it builds, which a closed port cannot show.
     MAILJET_API_URL: `http://127.0.0.1:${mailjetPort}`,
+    // Where a spoken announcement goes. The key itself is stored in the vault
+    // during the hold-music checks, so the rest of the run sees an install with
+    // no voice provider — which is what a fresh one is.
+    LLM_TTS_URL: `http://127.0.0.1:${ttsPort}`,
+    LLM_TTS_MODEL: 'tts-smoke',
   };
 
   // Starting the server is a function because the backup checks restart the
@@ -292,6 +345,7 @@ if (!base) {
     if (server && !server.killed) server.kill();
     if (stripeStub) stripeStub.close();
     if (mailjetStub) mailjetStub.close();
+    if (ttsStub) ttsStub.close();
     if (dataDir) {
       try {
         rmSync(dataDir, { recursive: true, force: true });
@@ -4774,8 +4828,8 @@ if (mohList.body.status?.voice?.available) {
 } else {
   const refused = await call('POST', '/api/hold-music', { name: 'Smoke spoken', message: 'Thank you for holding.', seconds: 20 });
   check(
-    'without the speech engine a message is refused, not silently dropped',
-    refused.status === 400 && /speech engine|synthesizer/i.test(refused.body.error?.message || ''),
+    'without a voice a message is refused, not silently dropped',
+    refused.status === 400 && /Settings → AI and subscriptions/.test(refused.body.error?.message || ''),
     refused.body.error?.message
   );
 }
@@ -4817,6 +4871,58 @@ if (configDir) {
   const written = existsSync(join(configDir, 'musiconhold.conf')) ? readFileSync(join(configDir, 'musiconhold.conf'), 'utf8') : '';
   check('the file is on disk, not only in the preview', written.includes(bedId) && written.includes('mode=files'), written.slice(0, 140));
 }
+
+console.log('\nA natural voice when the gateway has one');
+const voiceKey = await call('PUT', '/api/system/vault/TTS_API_KEY', { value: 'sk_smoke_tts' });
+check('a speech provider key can be stored', voiceKey.status === 200, voiceKey.body);
+const withVoice = await call('GET', '/api/hold-music');
+check(
+  'the generator switches to the natural voice',
+  withVoice.body.status?.voice?.engine === 'gateway',
+  withVoice.body.status?.voice
+);
+check(
+  'and offers the natural voices, not the offline ones',
+  (withVoice.body.speeches?.voices || []).length > 0 &&
+    (withVoice.body.speeches.voices || []).every((voice) => /^Natural/.test(voice.label)),
+  withVoice.body.speeches?.voices
+);
+const natural = await call('POST', '/api/hold-music', {
+  name: 'Smoke natural',
+  message: 'Your call is important to us.',
+  style: 'bright',
+  seconds: 20,
+});
+check(
+  'the words are spoken by the gateway',
+  natural.status === 201 && natural.body.render?.engine === 'gateway',
+  natural.body.render
+);
+const heard = ttsCalls.at(-1);
+let heardBody = {};
+try {
+  heardBody = JSON.parse(heard?.body || '{}');
+} catch {
+  heardBody = {};
+}
+check(
+  'the request is the documented OpenAI shape',
+  heard?.path === '/audio/speech' &&
+    heardBody.input === 'Your call is important to us.' &&
+    !!heardBody.voice &&
+    heardBody.model === 'tts-smoke' &&
+    heardBody.response_format === 'wav',
+  { path: heard?.path, body: heardBody }
+);
+check(
+  'a 24 kHz answer is resampled to the switch\'s 8 kHz',
+  Math.abs((natural.body.render?.messageSeconds || 0) - 1.4) < 0.15,
+  natural.body.render?.messageSeconds
+);
+if (natural.body.item?.id) await call('DELETE', `/api/hold-music/${natural.body.item.id}`);
+await call('DELETE', '/api/system/vault/TTS_API_KEY');
+const backToLocal = await call('GET', '/api/hold-music');
+check('and the install is left with no voice provider again', backToLocal.body.status?.voice?.engine !== 'gateway', backToLocal.body.status?.voice?.engine);
 
 const removed = await call('DELETE', `/api/hold-music/${bedId}`);
 check('deleting the applied track clears it', removed.status === 200 && removed.body.status?.applied === null, removed.body.status?.applied);

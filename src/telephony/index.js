@@ -337,19 +337,36 @@ export async function telephonyStatus() {
   };
 }
 
+/**
+ * The modules a generated file feeds. An apply reloads only these, so saving a
+ * hold-music track or a dialplan flow cannot knock the carrier trunk offline:
+ * reloading res_pjsip discards a live registration, and VoIP.ms refuses the
+ * immediate re-register that follows, leaving the trunk down for its forbidden
+ * retry interval (ten minutes) even though nothing about it changed.
+ */
+const RELOAD_FOR_FILE = {
+  'pjsip.conf': 'pjsip',
+  'extensions.conf': 'dialplan',
+  'musiconhold.conf': 'moh',
+};
+
 export async function applyConfiguration(actor = 'system') {
   const write = writeConfigs();
   let reload = null;
-  if (write.written && config.telephony.reloadOnApply) {
-    reload = await ami().reload('all');
+  const modules = [...new Set((write.changed || []).map((file) => RELOAD_FOR_FILE[file]).filter(Boolean))];
+  if (write.written && config.telephony.reloadOnApply && modules.length) {
+    reload = [];
+    for (const module of modules) {
+      reload.push(...(await ami().reload(module)));
+    }
   }
   db_.run('INSERT INTO events (actor, action, subject, detail) VALUES (?, ?, ?, ?)', [
     actor,
     'telephony.apply',
     'asterisk',
-    JSON.stringify({ write, reloaded: !!reload }),
+    JSON.stringify({ write, reloaded: !!reload, modules }),
   ]);
-  return { ...write, reloaded: !!reload };
+  return { ...write, reloaded: !!reload, modules };
 }
 
 /**

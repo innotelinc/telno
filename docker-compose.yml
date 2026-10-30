@@ -131,6 +131,21 @@ services:
       VOIPMS_CNAM: ${VOIPMS_CNAM:-false}
       VOIPMS_DID_MONTHLY_CENTS: ${VOIPMS_DID_MONTHLY_CENTS:-0}
       VOIPMS_CURRENCY: ${VOIPMS_CURRENCY:-USD}
+      # The model gateway behind AI features and the natural hold-music voice.
+      # The key belongs in the vault (Settings → AI and subscriptions); these
+      # pass a .env-only deployment through. A key in .env is a key on disk, so
+      # it is left empty here unless someone deliberately sets it.
+      AI_ENABLED: ${AI_ENABLED:-true}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TTS_URL: ${LLM_TTS_URL:-}
+      LLM_TTS_MODEL: ${LLM_TTS_MODEL:-}
+      LLM_TTS_VOICE: ${LLM_TTS_VOICE:-}
+      # Advertise this host's public address in SIP headers as well as in SDP.
+      # Only correct when UDP 5060 is forwarded here: a REGISTER whose Contact
+      # names an address nothing answers is dropped by the carrier.
+      SIP_EXTERNAL_SIGNALING: ${SIP_EXTERNAL_SIGNALING:-false}
       # Backups of the data volume: database, recordings and a manifest. The
       # schedule is what makes this a real protection rather than a button; keep
       # at least two archives, because one copy can be the good one and the bad

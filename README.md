@@ -375,10 +375,12 @@ typed, spoken, and set over a chord bed, then applied to the switch in one press
 - The bed is synthesised additively at 8 kHz — the rate G.711 already plays at — so there is no resample
   inside Asterisk and nothing above 3.6 kHz to alias. Four beds (calm, bright, lo-fi, sweep), each a
   four-bar progression that never quite resolves.
-- The message is spoken by `flite`, which ships in the image. It is a formant synthesizer, so it sounds
-  synthetic; the trade is that a hold announcement costs nothing per word, needs no internet connection
-  and cannot stop working when an API key expires. Four voices are offered, and a track with no message
-  is music alone.
+- The message is spoken by the gateway's `/audio/speech` route when a voice key is stored (`TTS_API_KEY`
+  in the vault, or the model key), and by `flite` in the image when it is not. That order matters: a
+  natural voice when the provider has one, and a written announcement that still gets read out when a
+  key expires or the gateway refuses — never silence. The console names the engine that spoke, and says
+  why when it fell back. Four offline voices and six natural ones, and a track with no message is music
+  alone.
 - A jingle opens the track, the announcement plays once and then every 45 seconds, and the bed ducks
   under it by 72% with ramps rather than cuts.
 - **Apply** marks the track as current and writes `musiconhold.conf` into the generated switch
@@ -833,9 +835,15 @@ The media is negotiated in one of two ways, and which one works is the carrier's
   slower, but it works on any trunk that carries voice, which is what a fax needs when a carrier will not
   negotiate T.38. Set this on a VoIP.ms deployment.
 
-- The trunk is framed for the carrier, not for us: `from_domain` is the carrier's own host and `from_user`
-  is left empty so the call's own number is the From user. A trunk that presents `subaccount@our.domain`
-  is refused with `503` even though authentication succeeded.
+- The trunk is framed for the carrier, not for us: `from_domain` is the carrier's own host and
+  `from_user` is a number the account owns (or the subaccount, when the carrier recognises it). Left
+  blank, the switch puts the *endpoint* name in the From header, and VoIP.ms answers `503` after a
+  perfectly good authentication. Outbound calls also drop the `+` from the dialled E.164, because a
+  carrier's Request-URI wants digits.
+- The UDP transport advertises the install's public address (`external_media_address`,
+  `external_signaling_address`, plus `local_net` for the private ranges). Without it the container sends
+  SDP with its Docker address, the carrier has nowhere to put RTP, and a call either connects to silence
+  or is refused outright — which is what a NAT'd VoIP.ms trunk does.
 
 - A number's `faxMode` decides how it answers: `voice`, `fax` (straight to the machine) or `auto`
   (ring the line, and treat an unanswered call as the fax it probably was).

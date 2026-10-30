@@ -23,7 +23,7 @@ import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { db_, now } from '../db/index.js';
 import { config } from '../config.js';
-import { DEFAULT_VOICE, speak, speechStatus } from './speech.js';
+import { speak, speechStatus } from './speech.js';
 import {
   SWITCH_RATE,
   encodeWav,
@@ -454,19 +454,21 @@ export function setAppliedHoldMusic(id) {
   return Number(changed.changes) > 0;
 }
 
-/** What the switch needs to know about the generator, for the console. */
+/**
+ * What the switch needs to know about the generator, for the console.
+ *
+ * The voice block is the speech engine's own status, unabridged: which engine
+ * will speak, its voices, and — when the natural one is configured but cannot
+ * be used — the reason. Hiding that behind a boolean is how an operator ends up
+ * wondering why a track sounds robotic.
+ */
 export const holdMusicStatus = () => {
   const applied = appliedHoldMusic();
   const speech = speechStatus();
   return {
     styles: STYLES.map(({ value, label }) => ({ value, label })),
-    voice: {
-      available: speech.available,
-      engine: speech.engine,
-      detail: speech.detail,
-      voices: [],
-    },
-    defaultVoice: DEFAULT_VOICE,
+    voice: speech,
+    defaultVoice: speech.defaultVoice,
     limits: { minSeconds: MIN_SECONDS, maxSeconds: MAX_SECONDS, maxMessage: MAX_MESSAGE },
     applied,
     clazz: config.parking.mohClass,
