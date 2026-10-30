@@ -228,6 +228,15 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
       // good authentication. The subaccount is the safer fallback because every
       // carrier that sells subaccounts recognises it.
       `from_user=${safe(trunk.from_user || trunk.username || trunk.name, 'unknown')}`,
+      // Without a display name the far end sees "Anonymous", which people
+      // decline and some carriers refuse outright; a name is not decoration on
+      // an outbound call. The number is the honest name, and sending it as
+      // P-Asserted-Identity is what lets VoIP.ms vouch for it rather than shrug.
+      `callerid="${safe(trunk.from_user || trunk.username || trunk.name, 'unknown')}" <${safe(
+        trunk.from_user || trunk.username || trunk.name,
+        'unknown'
+      )}>`,
+      'send_pai=yes',
       // A fax over a carrier trunk is only reliable when the switch can offer
       // T.38 on the endpoint: res_fax renegotiates the media to it during the
       // call, and falls back to G.711 passthrough when the far end refuses.
