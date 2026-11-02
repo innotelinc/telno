@@ -1,0 +1,12 @@
+[Unit]
+Description=Check that the Telno legacy import has not drifted
+Documentation=https://github.com/innotelinc/telno/blob/main/docs/deployment.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The importer lives in the image, so the check runs where it can see both
+# databases: inside the running container, against the mounted volume.
+ExecStart=/usr/bin/docker exec telno node /app/scripts/check-legacy-import.mjs
+Nice=10

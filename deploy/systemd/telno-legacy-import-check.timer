@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Telno legacy import drift check
+
+[Timer]
+# Off the hour, so it does not collide with the estate checks.
+OnCalendar=*-*-* 06:15:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
