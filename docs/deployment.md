@@ -124,6 +124,36 @@ a derived `LEGACY-<MAC>` serial and `pending` status: when the hardware enrolls 
 presents its real serial and appears as its own device, leaving the imported row
 as the record of what was carried over.
 
+## Pushing from the node
+
+The checkout on the node is the one that actually runs, so a fix made there should be able
+to leave from there. It pushes over SSH with a **repository deploy key that has write
+access** — not a personal token, because a node is not a person and a revoked leaver
+should not take the node's ability to commit with them.
+
+`/opt/telno` (inside the `telno` container on `i4`) is set up as:
+
+```
+git@github.com:innotelinc/telno.git   origin
+/root/.ssh/id_ed25519                the key, label `telno-node-deploy`
+/root/.ssh/known_hosts               github.com, seeded with ssh-keyscan
+```
+
+The key is registered with `--allow-write` and titled `telno node (incus telno) - direct
+push`, so `git push origin main` works with nothing else set up. To check it still does:
+
+```bash
+git push --dry-run origin main     # "Everything up-to-date" when the key is trusted
+```
+
+To rotate, generate a new key in the container, add it with
+`gh repo deploy-key add <pub> --repo innotelinc/telno --allow-write`, then remove the old
+one from the repository's Deploy keys settings. The previous key keeps working until it
+is removed, so a rotation is two steps and neither one is an outage.
+
+A node that cannot push is not a reason to hand-edit the tree: commit where the remote is
+reachable and fetch, rather than leaving the running checkout ahead of `main`.
+
 ## Rollback
 
 The image is built locally and tagged `telno:latest`; there is no registry tag to
