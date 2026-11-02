@@ -85,13 +85,18 @@ function slug(value) {
 }
 
 /*
- * The new catalog ships exactly two products, so a legacy model has to land on
- * one of them or be declined. A declined device is reported, never guessed: a
- * wrong model key would make the console serve the wrong provisioning template.
+ * A legacy model has to land on a key the catalog knows or be declined. A
+ * declined device is reported, never guessed: a wrong model key makes the
+ * console serve the wrong provisioning template — and, since 2026-11-02, the
+ * wrong voice transport, so a SIP handset would be issued a cantus document it
+ * cannot act on.
+ *
+ * t54w and dp750 are their own entries as of the 2026-11-02 catalog; they used
+ * to be folded onto `t750` only because nothing else existed to map them to.
  */
 const MODEL_MAP = new Map([
-  ['t54w', 't750'],
-  ['dp750', 't750'],
+  ['t54w', 't54w'],
+  ['dp750', 'dp750'],
   ['t750', 't750'],
   ['ht802', 'ht802'],
   ['ht812', 'ht802'],

@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import type { DeviceConfig, Line, ModelKey, RoutingMode } from '@telno/shared';
 import { voiceProfileFor, type VoiceSettings } from './voice.js';
-import { CONFIG_SCHEMA } from '@telno/shared';
+import { CONFIG_SCHEMA, DEVICE_MODELS } from '@telno/shared';
 import { provisioningKey } from './db.js';
 
 /**
@@ -82,9 +82,14 @@ const EPOCH = new Date(0).toISOString();
 export function buildDeviceConfig(input: ConfigInput): DeviceConfig {
   const { device, lines, settings } = input;
   const { keyId } = provisioningKey();
+  // The cap is the hardware's, not a constant: a six-account desk phone and a
+  // twelve-account one are both in the catalog, and silently truncating a
+  // T54W at the T750's six would leave lines nobody could see were missing.
+  // Unknown keys fall back to the smallest desk phone rather than to zero.
+  const slots = DEVICE_MODELS[device.model]?.accountSlots ?? 6;
   const accounts = lines
     .filter((line) => line.enabled)
-    .slice(0, 6)
+    .slice(0, slots)
     .map((line) => ({
       slot: line.accountSlot,
       aor: line.aor,

@@ -11,18 +11,31 @@ export const CONFIG_SCHEMA = 'telno.device.config/1';
 export const ROUTING_SCHEMA = 'telno.routing/1';
 
 /** Hardware profiles this platform ships. */
-export type ModelKey = 't750' | 'ht802';
+export type ModelKey = 't750' | 'ht802' | 't54w' | 'dp750';
 
 export interface DeviceModel {
   key: ModelKey;
   /** Commercial model name, e.g. "Telno T750 2026". */
   name: string;
-  formFactor: 'desk-phone' | 'analog-adapter';
+  formFactor: 'desk-phone' | 'analog-adapter' | 'dect-base';
   summary: string;
   /** SIP/voice account slots the hardware can hold. */
   accountSlots: number;
   /** Physical voice ports (FXS lines on an adapter, handset on a phone). */
   voicePorts: number;
+  /**
+   * How this hardware speaks voice, declared rather than inferred.
+   *
+   * cantus carries signalling and media on one socket, which Telno's own desk
+   * phones speak natively. Every third-party handset in the catalog speaks SIP
+   * and reaches cantus through an edge — so the transport is a property of the
+   * model, not something to guess from the form factor. Guessing is how a
+   * configuration gets issued that describes a device that does not exist: a
+   * `cantus/1` document sent to a Yealink is a document it cannot act on.
+   */
+  voice: 'cantus' | 'sip';
+  /** Local SIP ports to bind, one per voice endpoint. SIP models only. */
+  sipLocalPorts?: number[];
   network: { poe: boolean; ports: number; speedMbps: number };
   features: string[];
   /** Keys the device must echo back when it enrolls. */
@@ -37,6 +50,7 @@ export const DEVICE_MODELS: Record<ModelKey, DeviceModel> = {
     summary: 'Six-line executive desk phone with a colour display, gigabit switching and PoE.',
     accountSlots: 6,
     voicePorts: 1,
+    voice: 'cantus',
     network: { poe: true, ports: 2, speedMbps: 1000 },
     features: [
       '6 programmable line keys',
@@ -55,6 +69,9 @@ export const DEVICE_MODELS: Record<ModelKey, DeviceModel> = {
     summary: 'Two-port analog terminal adapter that puts existing handsets on cantus.',
     accountSlots: 2,
     voicePorts: 2,
+    voice: 'sip',
+    // One local port per FXS port, so a NAT keeps the two flows apart.
+    sipLocalPorts: [5060, 5062],
     network: { poe: false, ports: 1, speedMbps: 100 },
     features: [
       '2 FXS ports',
@@ -63,6 +80,52 @@ export const DEVICE_MODELS: Record<ModelKey, DeviceModel> = {
       'Tone and cadence profiles per region',
       'Wall-mount enclosure',
       'Watchdog with signed config rollback',
+    ],
+    enrollmentFields: ['serial', 'mac', 'firmware'],
+  },
+  t54w: {
+    key: 't54w',
+    name: 'Yealink T54W',
+    formFactor: 'desk-phone',
+    summary: 'Prime business desk phone: 4.3" colour display, ten line keys, Wi-Fi and Bluetooth.',
+    // Yealink's datasheet: up to 12 SIP accounts, 10 line keys programmable to 27
+    // features across three pages. The platform will hand it up to 12 lines; the
+    // phone shows ten of them on keys and pages through the rest.
+    accountSlots: 12,
+    voicePorts: 1,
+    voice: 'sip',
+    sipLocalPorts: [5060],
+    network: { poe: true, ports: 2, speedMbps: 1000 },
+    features: [
+      '10 line keys (27 programmable, 3 pages)',
+      '4.3" colour display',
+      'Built-in Wi-Fi and Bluetooth',
+      'HD handset and speakerphone',
+      'Dual-port gigabit with PoE 802.3af',
+      'SIP — reaches cantus through the edge',
+    ],
+    enrollmentFields: ['serial', 'mac', 'firmware'],
+  },
+  dp750: {
+    key: 'dp750',
+    name: 'Grandstream DP750',
+    formFactor: 'dect-base',
+    summary: 'Long-range DECT base station: up to five DP720 handsets on ten SIP accounts.',
+    // Grandstream's datasheet: 10 SIP accounts per system, up to 10 lines per
+    // handset, 5 concurrent calls, up to 5 handsets, integrated PoE. No FXS ports:
+    // the handsets are the voice endpoints, so `voicePorts` counts DECT handsets.
+    accountSlots: 10,
+    voicePorts: 5,
+    voice: 'sip',
+    sipLocalPorts: [5060],
+    network: { poe: true, ports: 1, speedMbps: 100 },
+    features: [
+      'Up to 5 DP720 handsets',
+      '10 SIP accounts, 10 lines per handset',
+      '5 concurrent calls per DECT system',
+      '300 m outdoor / 50 m indoor range',
+      'Integrated PoE',
+      'SIP — reaches cantus through the edge',
     ],
     enrollmentFields: ['serial', 'mac', 'firmware'],
   },

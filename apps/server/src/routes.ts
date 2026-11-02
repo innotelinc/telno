@@ -1,6 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { DeviceConfig, ModelKey, RoutingMode } from '@telno/shared';
-import { DEVICE_MODELS, extensionProblem, isModelKey, normalizeExtension } from '@telno/shared';
+import {
+  DEVICE_MODELS,
+  MODEL_KEYS,
+  extensionProblem,
+  isModelKey,
+  normalizeExtension,
+} from '@telno/shared';
 import { AtaUnsupported } from './ata/device.js';
 import { env } from './env.js';
 import { forgetAdaptor, probeAdaptor, rebootAdaptor, setAdaptorAccount } from './ata/probe.js';
@@ -230,7 +236,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!requireSession(req, reply)) return;
     const body = (req.body ?? {}) as Body;
     const model = body.model;
-    if (!isModelKey(model)) return bad(reply, 'model must be t750 or ht802');
+    // Named from the catalog, so the sentence stays true as hardware is added.
+    if (!isModelKey(model)) return bad(reply, `model must be one of ${MODEL_KEYS.join(', ')}`);
     const label = str(body.label).trim();
     if (!label) return bad(reply, 'label is required');
     const serial =
@@ -288,6 +295,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return bad(reply, 'invalid status');
     }
     if (!label) return bad(reply, 'label cannot be empty');
+    // A device can be re-classified. It has to be: a record imported before its
+    // hardware was in the catalog is otherwise stuck on the key it was guessed
+    // onto, and would be served that model's voice document forever.
+    const model = body.model === undefined ? row.model : body.model;
+    if (!isModelKey(model)) return bad(reply, `model must be one of ${MODEL_KEYS.join(', ')}`);
+    const modelChanged = model !== row.model;
     let addr = row.addr;
     if (body.addr !== undefined) {
       const raw = str(body.addr).trim();
@@ -295,14 +308,31 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       if (raw && !host) return bad(reply, 'that is not a usable device address');
       addr = host && !isLoopback(host) ? host : null;
     }
-    db.prepare('UPDATE devices SET label = ?, location = ?, status = ?, addr = ? WHERE id = ?').run(
+    // The model is part of the signed document, so a change is a new revision:
+    // the device is told a version, not handed a body that differs from the one
+    // its stored revision describes.
+    const version = modelChanged ? row.config_version + 1 : row.config_version;
+    db.prepare(
+      'UPDATE devices SET label = ?, location = ?, status = ?, addr = ?, model = ?, config_version = ?, config_issued_at = ? WHERE id = ?',
+    ).run(
       label,
       location,
       status,
       addr,
+      model,
+      version,
+      modelChanged ? now() : row.config_issued_at,
       id,
     );
     recordEvent('device', 'info', `Device "${label}" updated.`, { serial: row.serial, status });
+    if (modelChanged) {
+      recordEvent(
+        'device',
+        'warn',
+        `Device "${label}" re-classified from ${DEVICE_MODELS[row.model]?.name ?? row.model} to ${DEVICE_MODELS[model].name}; revision ${version} issued.`,
+        { serial: row.serial, from: row.model, to: model },
+      );
+    }
     return { device: toDevice(deviceRow(id)!) };
   });
 
@@ -593,7 +623,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!requireSession(req, reply)) return;
     const body = (req.body ?? {}) as Body;
     const model = body.model;
-    if (!isModelKey(model)) return bad(reply, 'model must be t750 or ht802');
+    if (!isModelKey(model)) return bad(reply, `model must be one of ${MODEL_KEYS.join(', ')}`);
     const ttl = Math.min(Math.max(Number(body.ttlMinutes ?? 60) || 60, 5), 1440);
     const code = issueEnrollmentCode();
     const expiresAt = new Date(Date.now() + ttl * 60_000).toISOString();

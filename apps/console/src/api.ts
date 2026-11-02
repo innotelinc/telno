@@ -71,7 +71,7 @@ export const api = {
   devices: () => request<{ devices: Device[] }>('/api/devices'),
   createDevice: (body: { model: ModelKey; label: string; location?: string; serial?: string; mac?: string }) =>
     post<{ device: Device; enrollment: { code: string; expiresAt: string } | null }>('/api/devices', body),
-  updateDevice: (id: string, body: Partial<Pick<Device, 'label' | 'location' | 'status'>>) =>
+  updateDevice: (id: string, body: Partial<Pick<Device, 'label' | 'location' | 'status' | 'model'>>) =>
     patch<{ device: Device }>(`/api/devices/${id}`, body),
   deleteDevice: (id: string) => del<{ ok: true }>(`/api/devices/${id}`),
   reconfigure: (id: string) =>

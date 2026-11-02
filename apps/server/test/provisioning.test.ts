@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { canonicalJson, signConfig } from '../src/provisioning.js';
+import { voiceProfileFor } from '../src/voice.js';
+import { DEVICE_MODELS, MODEL_KEYS } from '@telno/shared';
 import {
   buildRoutingDocument,
   validateLocally,
@@ -21,6 +23,58 @@ describe('canonical JSON', () => {
 
   it('keeps array order significant', () => {
     expect(canonicalJson([1, 2])).not.toBe(canonicalJson([2, 1]));
+  });
+});
+
+describe('catalog', () => {
+  it('carries the two handsets the estate actually owns', () => {
+    expect(MODEL_KEYS).toEqual(expect.arrayContaining(['t54w', 'dp750']));
+    // Datasheet capacities: T54W takes 12 SIP accounts, DP750 takes 10 across 5 handsets.
+    expect(DEVICE_MODELS.t54w.accountSlots).toBe(12);
+    expect(DEVICE_MODELS.dp750.accountSlots).toBe(10);
+    expect(DEVICE_MODELS.dp750.voicePorts).toBe(5);
+    expect(DEVICE_MODELS.dp750.formFactor).toBe('dect-base');
+  });
+
+  it('declares a voice transport for every model', () => {
+    for (const key of MODEL_KEYS) {
+      expect(['cantus', 'sip']).toContain(DEVICE_MODELS[key].voice);
+    }
+  });
+});
+
+describe('voice profile per model', () => {
+  const settings = { domain: 'telno.local', voiceNode: '10.0.0.5', voicePort: 7443, relay: null };
+
+  it('keeps cantus for the platform\'s own desk phone', () => {
+    expect(voiceProfileFor('t750', settings).transport).toBe('cantus/1');
+  });
+
+  it('gives SIP hardware SIP, never cantus', () => {
+    // The bug this prevents: a T54W or DP750 issued a `cantus/1` document it has
+    // no way to read, because the transport was inferred from the form factor.
+    for (const key of ['ht802', 't54w', 'dp750'] as const) {
+      const voice = voiceProfileFor(key, settings);
+      if (voice.transport !== 'sip') throw new Error(`${key} was given ${voice.transport}`);
+      expect(voice.server).toBe('telno.local');
+    }
+  });
+
+  it('binds one local port per voice endpoint the hardware has', () => {
+    const at = voiceProfileFor('ht802', settings);
+    if (at.transport !== 'sip') throw new Error('ht802 should be sip');
+    expect(at.localPorts).toEqual([5060, 5062]);
+
+    for (const key of ['t54w', 'dp750'] as const) {
+      const voice = voiceProfileFor(key, settings);
+      if (voice.transport !== 'sip') throw new Error(`${key} should be sip`);
+      expect(voice.localPorts).toEqual([5060]);
+    }
+  });
+
+  it('uses the configured SIP edge for every SIP model', () => {
+    const voice = voiceProfileFor('t54w', { ...settings, sipEdge: 'edge.telno.local', sipPort: 5061 });
+    expect(voice).toMatchObject({ server: 'edge.telno.local', port: 5061 });
   });
 });
 

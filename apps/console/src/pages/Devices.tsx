@@ -125,7 +125,7 @@ export function DevicesPage() {
             message={
               query
                 ? 'Try a serial fragment or clear the filter.'
-                : 'Add a T750 or HT802 and give the owner an enrollment code.'
+                : 'Add the hardware and give the owner an enrollment code.'
             }
             action={
               !query ? (
@@ -502,6 +502,33 @@ function DeviceDetail({
           <div className="row">
             <span className="muted">Location</span>
             <span className="spacer">{device.location || '—'}</span>
+          </div>
+          {/* Re-classifiable on purpose: an imported record can predate its
+              hardware being in the catalog, and the model decides which voice
+              document the device is served. */}
+          <div className="row">
+            <span className="muted">Model</span>
+            <span className="spacer">
+              <select
+                className="select"
+                value={device.model}
+                aria-label="Device model"
+                disabled={busy === 'model'}
+                onChange={(event) =>
+                  act('model', async () => {
+                    await api.updateDevice(device.id, { model: event.target.value as ModelKey });
+                    push('Model updated — a new configuration revision is waiting', 'ok');
+                    config.reload();
+                  })
+                }
+              >
+                {MODEL_KEYS.map((key) => (
+                  <option key={key} value={key}>
+                    {DEVICE_MODELS[key].name}
+                  </option>
+                ))}
+              </select>
+            </span>
           </div>
         </div>
         <div className="stack small">
