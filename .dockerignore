@@ -1,0 +1,15 @@
+# Build inputs are copied explicitly; everything else is host state that would
+# only invalidate the cache or leak a secret into a layer.
+.git
+.gitignore
+.github
+node_modules
+**/node_modules
+**/dist
+.data
+.env
+.env.*
+*.md
+docs
+certs
+telno*.tar.gz

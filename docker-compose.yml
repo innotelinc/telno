@@ -1,0 +1,54 @@
+name: telno
+
+services:
+  telno:
+    build:
+      context: .
+      # Point this at a mirror when Docker Hub is unreachable:
+      #   NODE_IMAGE=mirror.gcr.io/library/node:24-bookworm-slim docker compose build
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+    image: telno:latest
+    container_name: telno
+    restart: unless-stopped
+
+    # A readable hostname on purpose: SIP parsers read a digit-leading host as a
+    # broken IPv4 address. Devices address this node by name.
+    hostname: ${TELNO_HOSTNAME:-telno}
+
+    # The control plane shares the host's network stack. The edge reaches it on
+    # 8080 over a plain host socket, and device provisioning / cantus voice need
+    # the real source address, which a published port would replace with the
+    # userland proxy's.
+    network_mode: host
+
+    environment:
+      PORT: ${TELNO_PORT:-8080}
+      HOST: 0.0.0.0
+      # A new schema beside the legacy database, which stays untouched: the
+      # Asterisk-era telno.db is a different shape and is kept for reference.
+      TELNO_DB: /data/control-plane.db
+      TELNO_CANTUS_DIR: /app/vendor/cantus
+      TELNO_ADMIN_USER: ${TELNO_ADMIN_USER:-admin}
+      TELNO_ADMIN_PASSWORD: ${TELNO_ADMIN_PASSWORD:-}
+      TELNO_TRUSTED_NETWORKS: ${TELNO_TRUSTED_NETWORKS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      # Analog adaptors are read through their own web console; the password is
+      # used to open a session and is never returned by an endpoint.
+      TELNO_ATA_USER: ${TELNO_ATA_USER:-admin}
+      TELNO_ATA_PASSWORD: ${TELNO_ATA_PASSWORD:-}
+      TELNO_VOICE_NODE: ${TELNO_VOICE_NODE:-}
+      TELNO_VOICE_PORT: ${TELNO_VOICE_PORT:-7443}
+      TELNO_VOICE_RELAY: ${TELNO_VOICE_RELAY:-}
+      # The deployment cap: this box has run out of memory before, and the
+      # control plane is a few hundred MB even under load.
+      NODE_OPTIONS: --max-old-space-size=256
+
+    volumes:
+      # The data volume the previous deployment created, reused rather than
+      # renamed: the legacy database, faxes and recordings live on it.
+      - telno-data:/data
+
+volumes:
+  telno-data:
+    external: true
+    name: telno_telno-data
