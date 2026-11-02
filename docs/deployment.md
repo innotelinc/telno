@@ -98,6 +98,21 @@ docker compose exec telno node scripts/import-legacy.mjs --apply                
 docker compose exec telno node scripts/import-legacy.mjs --apply --replace-lines # legacy wins a collision
 ```
 
+The console seeds sample inventory on first boot, so on a node with real records the
+sample rows are noise. `--prune-seed` removes only rows that still match the seeder's
+exact tuple (serial+MAC, extension+aor+name, name+number+email); anything edited since
+no longer matches and is kept. `seed.demo` stays set, so a restart will not re-create
+them.
+
+```bash
+docker compose exec telno node scripts/import-legacy.mjs --apply --prune-seed
+docker compose exec telno node scripts/check-legacy-import.mjs   # 0 when nothing drifted
+```
+
+`check-legacy-import.mjs` re-runs the importer in dry-run mode and exits non-zero when
+any record would be inserted, updated or could not be mapped. It is what the
+`telno-legacy-import-check` timer runs.
+
 An extension number is unique, so a legacy extension that collides with a row the
 console already has (the seeded samples, typically) is reported as a `conflict`
 and left alone unless `--replace-lines` is given. Re-run the dry run afterwards:

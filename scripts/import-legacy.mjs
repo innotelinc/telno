@@ -21,6 +21,7 @@
  *   node scripts/import-legacy.mjs                          # dry run, prints a plan
  *   node scripts/import-legacy.mjs --apply                  # writes
  *   node scripts/import-legacy.mjs --apply --replace-lines   # legacy wins a collision
+ *   node scripts/import-legacy.mjs --apply --prune-seed      # drop the seeded samples
  *   node scripts/import-legacy.mjs --apply --json            # machine readable
  *
  * The legacy database is opened read-only. Nothing is written to it.
@@ -39,6 +40,7 @@ function arg(name, fallback = '') {
 const APPLY = process.argv.includes('--apply');
 const JSON_OUT = process.argv.includes('--json');
 const REPLACE_LINES = process.argv.includes('--replace-lines');
+const PRUNE_SEED = process.argv.includes('--prune-seed');
 const LEGACY_PATH = arg('legacy', '/data/telno.db');
 const TARGET_PATH = arg('target', process.env.TELNO_DB || '/data/control-plane.db');
 
@@ -131,6 +133,7 @@ const report = {
   lines: [],
   directory: [],
   settings: [],
+  pruned: [],
   counts: {},
 };
 
@@ -330,6 +333,82 @@ for (const row of rows('listings')) {
   report.directory.push({ action: APPLY ? 'inserted' : 'would-insert', number, displayName });
 }
 
+/* -------------------------------------------------------------- demo rows */
+
+/*
+ * A fresh install seeds sample inventory (seed() in db.ts) so the console is not
+ * empty. On a node carrying real records that sample data is just noise. Every
+ * seeded row is matched by the exact tuple the seeder wrote — serial+MAC for a
+ * device, extension+aor+display name for a line, name+number+email for a
+ * directory entry — so a row an operator has since edited no longer matches and
+ * is left alone. `seed.demo` stays set, so a restart will not re-create them.
+ */
+const SEEDED_DEVICES = [
+  ['T750-2026-000418', 'AA:42:10:7C:11:01'],
+  ['T750-2026-000419', 'AA:42:10:7C:11:02'],
+  ['HT802-2026-000117', 'AA:42:10:7C:22:01'],
+  ['HT802-2026-000118', 'AA:42:10:7C:22:02'],
+];
+const SEEDED_LINES = [
+  ['101', 'reception', 'Reception'],
+  ['102', 'support', 'Support queue'],
+  ['201', 'lab', 'Lab bench'],
+  ['202', 'stores', 'Stores'],
+];
+const SEEDED_DIRECTORY = [
+  ['Amara Okafor', '+44 20 7946 0102', 'amara@telno.local'],
+  ['Ben Sarkis', '+44 20 7946 0117', 'ben@telno.local'],
+  ['Chen Wei', '+44 20 7946 0133', 'chen@telno.local'],
+  ['Dana Whitfield', '+44 20 7946 0148', 'dana@telno.local'],
+  ['Emil Novak', '+44 20 7946 0155', 'emil@telno.local'],
+];
+
+if (PRUNE_SEED) {
+  const allLines = target.prepare('SELECT * FROM lines').all();
+  for (const [extension, aorName, displayName] of SEEDED_LINES) {
+    const row = allLines.find(
+      (line) =>
+        text(line.extension) === extension &&
+        text(line.display_name) === displayName &&
+        text(line.aor).startsWith(`${aorName}@`),
+    );
+    if (!row) continue;
+    if (APPLY) target.prepare('DELETE FROM lines WHERE id = ?').run(row.id);
+    report.pruned.push({
+      action: APPLY ? 'pruned' : 'would-prune',
+      kind: 'line',
+      extension,
+    });
+  }
+
+  const allDevices = target.prepare('SELECT * FROM devices').all();
+  for (const [serial, mac] of SEEDED_DEVICES) {
+    const row = allDevices.find(
+      (device) => text(device.serial) === serial && text(device.mac).toUpperCase() === mac,
+    );
+    if (!row) continue;
+    if (APPLY) target.prepare('DELETE FROM devices WHERE id = ?').run(row.id);
+    report.pruned.push({ action: APPLY ? 'pruned' : 'would-prune', kind: 'device', serial });
+  }
+
+  const allDirectory = target.prepare('SELECT * FROM directory').all();
+  for (const [displayName, number, email] of SEEDED_DIRECTORY) {
+    const row = allDirectory.find(
+      (entry) =>
+        text(entry.display_name) === displayName &&
+        text(entry.number) === number &&
+        text(entry.email) === email,
+    );
+    if (!row) continue;
+    if (APPLY) target.prepare('DELETE FROM directory WHERE id = ?').run(row.id);
+    report.pruned.push({
+      action: APPLY ? 'pruned' : 'would-prune',
+      kind: 'directory',
+      number,
+    });
+  }
+}
+
 /* --------------------------------------------------------------- settings */
 
 /*
@@ -375,6 +454,7 @@ report.counts = {
   lines: tally(report.lines),
   directory: tally(report.directory),
   settings: tally(report.settings),
+  pruned: tally(report.pruned),
 };
 
 if (APPLY) {
@@ -422,5 +502,6 @@ if (JSON_OUT) {
   line('lines', report.lines);
   line('directory', report.directory);
   line('settings', report.settings);
+  line('demo rows', report.pruned);
   if (!APPLY) console.log('\nNo changes written. Re-run with --apply to import.');
 }
