@@ -71,6 +71,10 @@ COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/console/dist ./apps/console/dist
 COPY vendor ./vendor
 
+# Operator scripts ship with the app: the image is the only thing on a node
+# that can run the legacy importer, so it must not live only on the host.
+COPY scripts ./scripts
+
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 

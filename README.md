@@ -16,6 +16,7 @@ packages/shared  product types and the T750/HT802 model catalog
 vendor/cantus    the cantus reference stack, unmodified (AGPL-3.0)
 scripts/smoke.mjs  end-to-end check of the whole device lifecycle
 docs/REPORT.md   reverse-engineering findings, decisions, open questions
+docs/deployment.md image, volume ownership, first boot, rollback
 ```
 
 ## Quick start
@@ -314,5 +315,7 @@ demo seed.
 - cantus ships a reference stack with a loopback codec and a shared-secret HMAC profile; a
   production voice node needs a conformant implementation.
 - cantus and its specification are **AGPL-3.0**. See `docs/REPORT.md` §3 before selling.
+docs/deployment.md image, volume ownership, first boot, rollback
 - The previous platform's live server was unreachable during the rebuild, so no legacy data was
   imported and no legacy UI was copied; see `docs/REPORT.md` for the evidence and the unknowns.
+docs/deployment.md image, volume ownership, first boot, rollback
