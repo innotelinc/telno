@@ -1,0 +1,5 @@
+# Git runs a hook as a program, so a CRLF checkout dies at "bad interpreter"
+# before its first line and the guard silently disappears. Pin the hooks (and
+# the shell they source) to LF so every clone gets a runnable guard.
+.githooks/* text eol=lf
+.gitattributes text eol=lf
