@@ -1,52 +1,85 @@
 name: telno
 
+# One definition for both kinds of host.
+#
+# The container is the same either way — image, environment, data volume — so
+# everything it has in common lives in the two anchors below and the services
+# differ only in how they reach the network:
+#
+#   telno          host networking, and what `docker compose up` starts. Device
+#                  provisioning and cantus voice see the real source address;
+#                  a published port would replace it with the userland proxy's.
+#   telno-desktop  published port, behind the `desktop` profile. Docker Desktop
+#                  runs the engine in a VM, so `network_mode: host` binds inside
+#                  that VM: the container reports healthy and nothing answers at
+#                  127.0.0.1 on the machine that started it.
+#
+# deploy/install.sh picks one. Keeping them in one file is the point: a compose
+# variant in a second file drifts the moment either is edited.
+
+x-telno: &telno
+  build:
+    context: .
+    # Point this at a mirror when Docker Hub is unreachable:
+    #   NODE_IMAGE=mirror.gcr.io/library/node:24-bookworm-slim docker compose build
+    args:
+      NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+  image: telno:latest
+  restart: unless-stopped
+
+  # A readable hostname on purpose: SIP parsers read a digit-leading host as a
+  # broken IPv4 address. Devices address this node by name.
+  hostname: ${TELNO_HOSTNAME:-telno}
+
+  volumes:
+    # The data volume the previous deployment created, reused rather than
+    # renamed: the legacy database, faxes and recordings live on it.
+    - telno-data:/data
+
+x-telno-env: &telno-env
+  HOST: 0.0.0.0
+  # A new schema beside the legacy database, which stays untouched: the
+  # Asterisk-era telno.db is a different shape and is kept for reference.
+  TELNO_DB: /data/control-plane.db
+  TELNO_CANTUS_DIR: /app/vendor/cantus
+  TELNO_ADMIN_USER: ${TELNO_ADMIN_USER:-admin}
+  # Empty on purpose in the shipped .env: first boot generates one and prints it
+  # once, which is better than every install sharing a known password.
+  TELNO_ADMIN_PASSWORD: ${TELNO_ADMIN_PASSWORD:-}
+  TELNO_TRUSTED_NETWORKS: ${TELNO_TRUSTED_NETWORKS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+  # Analog adaptors are read through their own web console; the password is
+  # used to open a session and is never returned by an endpoint.
+  TELNO_ATA_USER: ${TELNO_ATA_USER:-admin}
+  TELNO_ATA_PASSWORD: ${TELNO_ATA_PASSWORD:-}
+  TELNO_VOICE_NODE: ${TELNO_VOICE_NODE:-}
+  TELNO_VOICE_PORT: ${TELNO_VOICE_PORT:-7443}
+  TELNO_VOICE_RELAY: ${TELNO_VOICE_RELAY:-}
+  # The deployment cap: this box has run out of memory before, and the control
+  # plane is a few hundred MB even under load.
+  NODE_OPTIONS: --max-old-space-size=256
+
 services:
   telno:
-    build:
-      context: .
-      # Point this at a mirror when Docker Hub is unreachable:
-      #   NODE_IMAGE=mirror.gcr.io/library/node:24-bookworm-slim docker compose build
-      args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
-    image: telno:latest
+    <<: *telno
+    # Named per service: compose refuses one container name on two services,
+    # and only one of these ever runs on a host.
     container_name: telno
-    restart: unless-stopped
-
-    # A readable hostname on purpose: SIP parsers read a digit-leading host as a
-    # broken IPv4 address. Devices address this node by name.
-    hostname: ${TELNO_HOSTNAME:-telno}
-
-    # The control plane shares the host's network stack. The edge reaches it on
-    # 8080 over a plain host socket, and device provisioning / cantus voice need
-    # the real source address, which a published port would replace with the
-    # userland proxy's.
     network_mode: host
-
     environment:
+      <<: *telno-env
       PORT: ${TELNO_PORT:-8080}
-      HOST: 0.0.0.0
-      # A new schema beside the legacy database, which stays untouched: the
-      # Asterisk-era telno.db is a different shape and is kept for reference.
-      TELNO_DB: /data/control-plane.db
-      TELNO_CANTUS_DIR: /app/vendor/cantus
-      TELNO_ADMIN_USER: ${TELNO_ADMIN_USER:-admin}
-      TELNO_ADMIN_PASSWORD: ${TELNO_ADMIN_PASSWORD:-}
-      TELNO_TRUSTED_NETWORKS: ${TELNO_TRUSTED_NETWORKS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
-      # Analog adaptors are read through their own web console; the password is
-      # used to open a session and is never returned by an endpoint.
-      TELNO_ATA_USER: ${TELNO_ATA_USER:-admin}
-      TELNO_ATA_PASSWORD: ${TELNO_ATA_PASSWORD:-}
-      TELNO_VOICE_NODE: ${TELNO_VOICE_NODE:-}
-      TELNO_VOICE_PORT: ${TELNO_VOICE_PORT:-7443}
-      TELNO_VOICE_RELAY: ${TELNO_VOICE_RELAY:-}
-      # The deployment cap: this box has run out of memory before, and the
-      # control plane is a few hundred MB even under load.
-      NODE_OPTIONS: --max-old-space-size=256
 
-    volumes:
-      # The data volume the previous deployment created, reused rather than
-      # renamed: the legacy database, faxes and recordings live on it.
-      - telno-data:/data
+  telno-desktop:
+    <<: *telno
+    container_name: telno-desktop
+    profiles: ['desktop']
+    ports:
+      # Published on the port the stack expects; inside the container it is
+      # always 8080, because the mapping is what carries the number.
+      - '${TELNO_PORT:-8080}:8080'
+    environment:
+      <<: *telno-env
+      PORT: 8080
 
 volumes:
   telno-data:

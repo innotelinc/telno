@@ -77,7 +77,7 @@ COPY scripts ./scripts
 
 # The install surface: a fresh host fetches these from a running install, so
 # they have to be in the image rather than only in the repository.
-COPY docker-compose.yml docker-compose.desktop.yml .env.example ./
+COPY docker-compose.yml .env.example ./
 COPY deploy ./deploy
 
 COPY docker/entrypoint.sh /usr/local/bin/telno-entrypoint
