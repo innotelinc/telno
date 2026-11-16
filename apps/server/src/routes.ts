@@ -67,9 +67,17 @@ function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
-function bad(reply: FastifyReply, message: string, code = 400): null {
+/**
+ * Sends a refusal and ends the handler: `return bad(...)`.
+ *
+ * Returns nothing on purpose. An async handler that resolves with a value is
+ * asking Fastify to send that value, and this one has already sent the reply —
+ * a handler returning the old `null` therefore ended every refusal with
+ * FST_ERR_REP_ALREADY_SENT at error level, which is noise in exactly the log an
+ * operator reads when something is wrong.
+ */
+function bad(reply: FastifyReply, message: string, code = 400): void {
   reply.code(code).send({ error: message });
-  return null;
 }
 
 /**
