@@ -270,6 +270,7 @@ names both, because an edited `.env` that silently stops applying is a trap.
 
 ## Security notes
 
+- Sign-in posture, the console allowlist and password rotation: [`docs/sign-in-posture.md`](docs/sign-in-posture.md).
 - Server-side sessions in `telno_session`, `HttpOnly`, `SameSite=Lax`, `Secure` over TLS,
   expiring per Settings; passwords are scrypt-hashed and every session is revoked on password
   change.
