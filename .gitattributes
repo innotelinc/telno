@@ -3,3 +3,6 @@
 # the shell they source) to LF so every clone gets a runnable guard.
 .githooks/* text eol=lf
 .gitattributes text eol=lf
+# The installer is piped into sh on the host that fetches it; a CRLF checkout
+# would hand it carriage returns instead of a runnable script.
+*.sh text eol=lf
