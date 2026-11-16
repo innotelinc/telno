@@ -52,6 +52,11 @@ export const env = {
   port: port(process.env.PORT, 8787),
   host: process.env.HOST ?? '127.0.0.1',
   dbPath: fromRoot(process.env.TELNO_DB ?? '.data/telno.db'),
+  /**
+   * Where a release archive waits for the installer. Next to the database by
+   * default, so both live on the volume rather than inside the image.
+   */
+  releasesDir: fromRoot(process.env.TELNO_RELEASES ?? '.data/releases'),
   adminUser: process.env.TELNO_ADMIN_USER ?? 'admin',
   /** Empty means "generate one on first boot and print it once". */
   adminPassword: process.env.TELNO_ADMIN_PASSWORD?.trim() ?? '',

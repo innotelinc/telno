@@ -1,11 +1,14 @@
 import Fastify from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
-import { createReadStream, existsSync, statSync } from 'node:fs';
-import { extname, resolve, sep } from 'node:path';
+import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { basename, extname, resolve, sep } from 'node:path';
 import { env, repoRoot } from './env.js';
 import { registerRoutes } from './routes.js';
 import { recordEvent } from './db.js';
 import { trustedNetworkText } from './security.js';
+import { requireSession } from './auth.js';
+import { parseRange, resolveRelease } from './releases.js';
 
 const app = Fastify({
   logger: {
@@ -38,6 +41,61 @@ app.setErrorHandler((error, req, reply) => {
 });
 
 await app.register(registerRoutes);
+
+// The release image, for an installer that fetches it from a running install
+// instead of a registry. Releases live on the data volume, outside the image
+// (which would otherwise contain a copy of itself), and are served with range
+// support so an interrupted download resumes.
+//
+// Created at boot rather than left to whoever uploads a release: the gate has
+// to answer the same way on an install with no archive yet, so an anonymous
+// request is refused by the gate rather than falling through to a 404 that
+// depends on what happens to be on the volume.
+const releasesDir = resolve(env.releasesDir);
+mkdirSync(releasesDir, { recursive: true });
+
+// Registered twice rather than as an array: Fastify's shorthand takes one path,
+// and `/download` with no trailing slash has to answer the same way as a path
+// under it instead of falling through to the console shell.
+const sendRelease = async (req: FastifyRequest, reply: FastifyReply) => {
+  // Behind the console, not public — and the session is checked before the
+  // path is resolved, so an anonymous caller cannot probe which releases
+  // exist. The allowlist applies as it does to every console route: the
+  // machine fetching an archive has to be able to reach the console.
+  if (!requireSession(req, reply)) return reply;
+
+  const release = resolveRelease(releasesDir, req.raw.url ?? '');
+  if (!release) return reply.code(404).send({ error: 'no release archive at that path' });
+
+  const range = parseRange(req.headers.range, release.size);
+  // Answered before the archive headers go on: a 416 carries a JSON body, and
+  // an octet-stream content type would make Fastify refuse to send it.
+  if (range === 'unsatisfiable') {
+    return reply
+      .code(416)
+      .header('content-range', `bytes */${release.size}`)
+      .send({ error: 'range not satisfiable' });
+  }
+
+  reply.header('content-type', 'application/octet-stream');
+  reply.header('accept-ranges', 'bytes');
+  // The archive is bytes, not a page: a stale link must never be answered with
+  // the console shell and a browser told to load it as a script.
+  reply.header('cache-control', 'no-store');
+  reply.header('content-disposition', `attachment; filename="${basename(release.file)}"`);
+
+  if (range) {
+    reply.code(206);
+    reply.header('content-range', `bytes ${range.start}-${range.end}/${release.size}`);
+    reply.header('content-length', String(range.end - range.start + 1));
+    return reply.send(createReadStream(release.file, { start: range.start, end: range.end }));
+  }
+  reply.header('content-length', String(release.size));
+  return reply.send(createReadStream(release.file));
+};
+
+app.get('/download', sendRelease);
+app.get('/download/*', sendRelease);
 
 // The console is a static build; in development Vite serves it on its own port
 // and proxies /api and /prov here.
