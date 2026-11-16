@@ -75,6 +75,11 @@ COPY vendor ./vendor
 # that can run the legacy importer, so it must not live only on the host.
 COPY scripts ./scripts
 
+# The install surface: a fresh host fetches these from a running install, so
+# they have to be in the image rather than only in the repository.
+COPY docker-compose.yml .env.example ./
+COPY deploy ./deploy
+
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 

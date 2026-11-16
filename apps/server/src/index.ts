@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
-import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, extname, resolve, sep } from 'node:path';
 import { env, repoRoot } from './env.js';
 import { registerRoutes } from './routes.js';
@@ -41,6 +41,40 @@ app.setErrorHandler((error, req, reply) => {
 });
 
 await app.register(registerRoutes);
+
+// The install surface: the installer a fresh host curls, the compose file it
+// starts from, and the .env template. Public on purpose — none of the three is
+// a secret — and served out of this image, because a host with nothing on it
+// cannot read them out of a repository it does not have.
+//
+// install.sh carries a @VERSION@ placeholder so the copy served here names the
+// release this platform actually is, rather than the one the file was written
+// beside in the tree.
+const INSTALL_FILES: Record<string, { file: string; type: string }> = {
+  '/install.sh': { file: 'deploy/install.sh', type: 'text/plain; charset=utf-8' },
+  '/docker-compose.yml': { file: 'docker-compose.yml', type: 'text/yaml; charset=utf-8' },
+  '/env.example': { file: '.env.example', type: 'text/plain; charset=utf-8' },
+};
+const releaseVersion =
+  (JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as { version?: string }).version ??
+  '';
+
+for (const [url, served] of Object.entries(INSTALL_FILES)) {
+  app.get(url, async (_req, reply) => {
+    const file = resolve(repoRoot, served.file);
+    if (!existsSync(file)) return reply.code(404).send({ error: `not found: ${served.file}` });
+    reply.header('content-type', served.type);
+    // An installer is fetched by a host that has none, so a cached copy from a
+    // previous version would install the version it was cached at.
+    reply.header('cache-control', 'no-cache');
+    // LF even when the tree was checked out on Windows: this lands in a shell
+    // script and in compose's .env parser, both of which read a stray CR as
+    // part of the line.
+    return reply.send(
+      readFileSync(file, 'utf8').replace(/\r\n/g, '\n').replaceAll('@VERSION@', releaseVersion),
+    );
+  });
+}
 
 // The release image, for an installer that fetches it from a running install
 // instead of a registry. Releases live on the data volume, outside the image
