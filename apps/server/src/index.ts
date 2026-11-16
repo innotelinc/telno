@@ -54,6 +54,9 @@ const INSTALL_FILES: Record<string, { file: string; type: string }> = {
   '/install.sh': { file: 'deploy/install.sh', type: 'text/plain; charset=utf-8' },
   '/docker-compose.yml': { file: 'docker-compose.yml', type: 'text/yaml; charset=utf-8' },
   '/env.example': { file: '.env.example', type: 'text/plain; charset=utf-8' },
+  // The admin reset travels with the installer: the host that loses its console
+  // password is exactly the one where nobody can fetch a script by hand.
+  '/ops/reset-telno-admin.sh': { file: 'ops/reset-telno-admin.sh', type: 'text/plain; charset=utf-8' },
 };
 const releaseVersion =
   (JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as { version?: string }).version ??
@@ -153,6 +156,12 @@ if (existsSync(consoleDist)) {
   app.get('/*', async (req, reply) => {
     const url = (req.raw.url ?? '/').split('?')[0]!;
     if (url.startsWith('/api') || url.startsWith('/prov')) {
+      return reply.code(404).send({ error: 'not found' });
+    }
+    // /ops/ holds files an installer curls, never pages. A renamed or missing
+    // script has to be a 404 so `curl -f` fails, rather than a 200 with the
+    // console shell piped into a shell.
+    if (url.startsWith('/ops/')) {
       return reply.code(404).send({ error: 'not found' });
     }
 

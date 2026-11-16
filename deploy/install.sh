@@ -91,6 +91,9 @@ command -v curl >/dev/null 2>&1 || fail "curl is required to fetch the install f
 # ------------------------------------------------------------------ files -----
 
 mkdir -p "$DIR"
+# Absolute, because the script cds into $DIR below and a relative $DIR would then
+# point one level too deep.
+INSTALL_DIR="$(cd "$DIR" && pwd)"
 
 fetch() {
   # fetch <path on the serving host> <destination> <what>
@@ -146,6 +149,20 @@ if [ -f "$DIR/.env" ]; then
 else
   fetch "/env.example" "$DIR/.env" "env.example"
   say "  Wrote $DIR/.env — review it before exposing this host to the internet."
+fi
+
+# The password reset travels with the installer: the host that loses its console
+# credentials is exactly the host where nobody can fetch a script by hand.
+# Optional, because a release that predates /ops/ should not fail an install over
+# a recovery tool.
+mkdir -p "$INSTALL_DIR/ops"
+if curl -fsSL "$BASE/ops/reset-telno-admin.sh" -o "$INSTALL_DIR/ops/reset-telno-admin.sh.tmp" 2>/dev/null \
+  && [ -s "$INSTALL_DIR/ops/reset-telno-admin.sh.tmp" ]; then
+  mv "$INSTALL_DIR/ops/reset-telno-admin.sh.tmp" "$INSTALL_DIR/ops/reset-telno-admin.sh"
+  chmod 700 "$INSTALL_DIR/ops/reset-telno-admin.sh" 2>/dev/null || true
+else
+  rm -f "$INSTALL_DIR/ops/reset-telno-admin.sh.tmp"
+  say "  No ops/reset-telno-admin.sh on this host; continuing without the reset."
 fi
 
 cd "$DIR"
@@ -276,6 +293,10 @@ say "    $COMPOSE_CMD logs $SERVICE | grep -A2 'First-run administrator'"
 say ""
 say "  If that banner is not there, this database already has its administrator and"
 say "  the password is the one set then — Settings → Password changes it."
+say ""
+say "  Lost it? As root on this host:"
+say "    $INSTALL_DIR/ops/reset-telno-admin.sh"
+say "  It prints a new one only after the console accepts it."
 say ""
 say "  The installer signed in to fetch the archive; that session is not this install's."
 say ""

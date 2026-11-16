@@ -79,6 +79,8 @@ COPY scripts ./scripts
 # they have to be in the image rather than only in the repository.
 COPY docker-compose.yml .env.example ./
 COPY deploy ./deploy
+# Served at /ops/reset-telno-admin.sh, next to the installer.
+COPY ops ./ops
 
 COPY docker/entrypoint.sh /usr/local/bin/telno-entrypoint
 RUN chmod +x /usr/local/bin/telno-entrypoint \

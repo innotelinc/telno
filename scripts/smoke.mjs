@@ -402,6 +402,21 @@ section('settings and export');
   check('export includes devices and routing', Array.isArray(exported.json?.devices) && Boolean(exported.json?.routing));
 }
 
+section('install surface');
+{
+  const served = await fetch(`${base}/ops/reset-telno-admin.sh`);
+  const servedBody = await served.text();
+  check(
+    'the admin reset is served as a script',
+    served.status === 200 && servedBody.startsWith('#!/usr/bin/env bash') && !/<html/i.test(servedBody.slice(0, 200)),
+    `HTTP ${served.status}`,
+  );
+  const installerBody = await (await fetch(`${base}/install.sh`)).text();
+  check('and the installer fetches it', installerBody.includes('/ops/reset-telno-admin.sh'));
+  const missing = await fetch(`${base}/ops/not-a-real-script.sh`);
+  check('an unknown /ops path is a 404, not the console shell', missing.status === 404, `HTTP ${missing.status}`);
+}
+
 section('cleanup');
 {
   const removed = await call(`/api/devices/${device.id}`, { method: 'DELETE' });
