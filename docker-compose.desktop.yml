@@ -1,0 +1,51 @@
+name: telno
+
+# The same stack as docker-compose.yml, for Docker Desktop.
+#
+# Desktop runs the engine inside a VM, so `network_mode: host` binds inside that
+# VM and the console is unreachable at 127.0.0.1 on the machine that started it
+# — a fault that looks exactly like a crash until you read the container log and
+# see it listening on 192.168.65.x. Publish the port instead. The trade, stated
+# plainly: device requests arrive from the userland proxy's address rather than
+# the device's, which matters for provisioning and cantus voice but not for the
+# console.
+
+services:
+  telno:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+    image: telno:latest
+    container_name: telno
+    restart: unless-stopped
+
+    # A readable hostname on purpose: SIP parsers read a digit-leading host as a
+    # broken IPv4 address.
+    hostname: ${TELNO_HOSTNAME:-telno}
+
+    ports:
+      - "${TELNO_PORT:-8080}:8080"
+
+    environment:
+      PORT: 8080
+      HOST: 0.0.0.0
+      TELNO_DB: /data/control-plane.db
+      TELNO_CANTUS_DIR: /app/vendor/cantus
+      TELNO_ADMIN_USER: ${TELNO_ADMIN_USER:-admin}
+      TELNO_ADMIN_PASSWORD: ${TELNO_ADMIN_PASSWORD:-}
+      TELNO_TRUSTED_NETWORKS: ${TELNO_TRUSTED_NETWORKS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      TELNO_ATA_USER: ${TELNO_ATA_USER:-admin}
+      TELNO_ATA_PASSWORD: ${TELNO_ATA_PASSWORD:-}
+      TELNO_VOICE_NODE: ${TELNO_VOICE_NODE:-}
+      TELNO_VOICE_PORT: ${TELNO_VOICE_PORT:-7443}
+      TELNO_VOICE_RELAY: ${TELNO_VOICE_RELAY:-}
+      NODE_OPTIONS: --max-old-space-size=256
+
+    volumes:
+      - telno-data:/data
+
+volumes:
+  telno-data:
+    external: true
+    name: telno_telno-data

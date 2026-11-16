@@ -53,6 +53,10 @@ await app.register(registerRoutes);
 const INSTALL_FILES: Record<string, { file: string; type: string }> = {
   '/install.sh': { file: 'deploy/install.sh', type: 'text/plain; charset=utf-8' },
   '/docker-compose.yml': { file: 'docker-compose.yml', type: 'text/yaml; charset=utf-8' },
+  '/docker-compose.desktop.yml': {
+    file: 'docker-compose.desktop.yml',
+    type: 'text/yaml; charset=utf-8',
+  },
   '/env.example': { file: '.env.example', type: 'text/plain; charset=utf-8' },
 };
 const releaseVersion =

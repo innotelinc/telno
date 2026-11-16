@@ -77,14 +77,18 @@ COPY scripts ./scripts
 
 # The install surface: a fresh host fetches these from a running install, so
 # they have to be in the image rather than only in the repository.
-COPY docker-compose.yml .env.example ./
+COPY docker-compose.yml docker-compose.desktop.yml .env.example ./
 COPY deploy ./deploy
 
-RUN mkdir -p /data && chown -R node:node /app /data
-USER node
+COPY docker/entrypoint.sh /usr/local/bin/telno-entrypoint
+RUN chmod +x /usr/local/bin/telno-entrypoint \
+ && mkdir -p /data && chown -R node:node /app /data
+
+# The image starts as root only long enough to take ownership of a freshly
+# created data volume, then runs the platform as node. See docker/entrypoint.sh.
+ENTRYPOINT ["/usr/local/bin/telno-entrypoint"]
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/api/health >/dev/null || exit 1
 
-CMD ["node", "apps/server/dist/index.js"]
