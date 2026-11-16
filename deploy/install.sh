@@ -51,6 +51,22 @@ for arg in "$@"; do
   esac
 done
 
+# The placeholder is filled in by the platform that serves this script. A copy
+# run straight out of the repository has not been through that, so take the
+# version from the tree beside it — and refuse rather than ask the release
+# volume for a file called telno-@VERSION@.tar.gz.
+if [ "$VERSION" = "@VERSION@" ]; then
+  SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+  if [ -n "${SELF_DIR:-}" ] && [ -f "$SELF_DIR/../package.json" ]; then
+    VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SELF_DIR/../package.json" | head -1)
+  fi
+fi
+case "$VERSION" in
+  '' | *@*)
+    fail "This copy of the installer still carries the @VERSION@ placeholder; the platform that serves it fills that in. Fetch /install.sh from a running install, or set TELNO_VERSION to the release you want."
+    ;;
+esac
+
 say() { printf '%s\n' "$*"; }
 fail() {
   printf '\n  %s\n\n' "$*" >&2
@@ -95,12 +111,21 @@ say "  release $VERSION"
 say "  into    $(cd "$DIR" && pwd)"
 say ""
 
-COMPOSE_FILE=docker-compose.yml
+# Docker Desktop runs the engine inside a VM, so host networking binds there and
+# the console is unreachable at 127.0.0.1 on this machine — the container looks
+# healthy and nothing answers. That variant publishes the port instead.
+if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+  COMPOSE_FILE=docker-compose.desktop.yml
+  say "  Docker Desktop detected: publishing the port instead of using host networking."
+else
+  COMPOSE_FILE=docker-compose.yml
+fi
+
 if [ -f "$DIR/$COMPOSE_FILE" ] && [ "$FORCE" -eq 0 ]; then
   say "  Keeping the $COMPOSE_FILE already in $DIR."
   say "  Re-run with --force to replace it with the served one."
 else
-  fetch "/docker-compose.yml" "$DIR/$COMPOSE_FILE" "$COMPOSE_FILE"
+  fetch "/$COMPOSE_FILE" "$DIR/$COMPOSE_FILE" "$COMPOSE_FILE"
 fi
 
 if [ -f "$DIR/.env" ]; then
@@ -108,6 +133,17 @@ if [ -f "$DIR/.env" ]; then
 else
   fetch "/env.example" "$DIR/.env" "env.example"
   say "  Wrote $DIR/.env — review it before exposing this host to the internet."
+fi
+
+# The template ships a placeholder password so a quickstart can sign in at all.
+# That value is public, so a console still accepting it is open to anyone who
+# can reach the port. Say it where the operator is already looking.
+if grep -qE '^TELNO_ADMIN_PASSWORD=change-me-before-first-run[[:space:]]*$' "$DIR/.env" 2>/dev/null; then
+  say ""
+  say "  WARNING: $DIR/.env still has the template password."
+  say "           Change TELNO_ADMIN_PASSWORD in that file before this console is"
+  say "           reachable from anywhere but this machine."
+  say ""
 fi
 
 cd "$DIR"
@@ -219,7 +255,16 @@ while [ "$i" -lt 40 ]; do
   i=$((i + 1))
   sleep 3
 done
-[ "$READY" -eq 1 ] || say "  It has not answered yet — check 'docker compose -f $COMPOSE_FILE logs telno'."
+# Not ready is a failed install, not a note beside a success message: the
+# container may be restarting (a data volume the app cannot write is the usual
+# reason), and saying "up" over a crash loop is how an operator loses an hour.
+if [ "$READY" -ne 1 ]; then
+  say ""
+  say "  The control plane did not answer at $LOCAL. Its log:"
+  say ""
+  docker compose -f "$COMPOSE_FILE" logs --tail 40 telno 2>&1 || true
+  fail "The stack was installed but is not running — the reason is at the end of the log above."
+fi
 
 say ""
 say "  Telno is up at $LOCAL"
