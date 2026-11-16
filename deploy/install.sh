@@ -111,15 +111,28 @@ say "  release $VERSION"
 say "  into    $(cd "$DIR" && pwd)"
 say ""
 
+COMPOSE_FILE=docker-compose.yml
+SERVICE=telno
+PROFILE_ARGS=""
+
 # Docker Desktop runs the engine inside a VM, so host networking binds there and
 # the console is unreachable at 127.0.0.1 on this machine — the container looks
-# healthy and nothing answers. That variant publishes the port instead.
+# healthy and nothing answers. The other service in the same compose file
+# publishes the port; both are defined together, off one anchor, so the two
+# cannot drift apart.
 if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
-  COMPOSE_FILE=docker-compose.desktop.yml
+  SERVICE=telno-desktop
+  PROFILE_ARGS="--profile desktop"
   say "  Docker Desktop detected: publishing the port instead of using host networking."
-else
-  COMPOSE_FILE=docker-compose.yml
 fi
+
+# The command the operator would type, kept in one place so the hints below name
+# the profile and service actually in use.
+COMPOSE_CMD="docker compose -f $COMPOSE_FILE${PROFILE_ARGS:+ $PROFILE_ARGS}"
+compose() {
+  # shellcheck disable=SC2086
+  docker compose -f "$COMPOSE_FILE" $PROFILE_ARGS "$@"
+}
 
 if [ -f "$DIR/$COMPOSE_FILE" ] && [ "$FORCE" -eq 0 ]; then
   say "  Keeping the $COMPOSE_FILE already in $DIR."
@@ -135,26 +148,14 @@ else
   say "  Wrote $DIR/.env — review it before exposing this host to the internet."
 fi
 
-# The template ships a placeholder password so a quickstart can sign in at all.
-# That value is public, so a console still accepting it is open to anyone who
-# can reach the port. Say it where the operator is already looking.
-if grep -qE '^TELNO_ADMIN_PASSWORD=change-me-before-first-run[[:space:]]*$' "$DIR/.env" 2>/dev/null; then
-  say ""
-  say "  WARNING: $DIR/.env still has the template password."
-  say "           Change TELNO_ADMIN_PASSWORD in that file before this console is"
-  say "           reachable from anywhere but this machine."
-  say ""
-fi
-
 cd "$DIR"
 
 # The compose file has to parse before anything is started: a typo in .env is
 # otherwise reported as a crash inside the container, which reads like a bug in
 # the platform rather than in the file beside it.
-# shellcheck disable=SC2086
-if ! docker compose -f "$COMPOSE_FILE" config >/dev/null 2>&1; then
+if ! compose config >/dev/null 2>&1; then
   say ""
-  docker compose -f "$COMPOSE_FILE" config || true
+  compose config || true
   fail "$COMPOSE_FILE or .env in $(pwd) is not valid — see the error above."
 fi
 
@@ -240,9 +241,9 @@ fi
 cleanup_archive
 
 # --no-build on purpose: the image just came out of the archive, and a build
-# would need the source this host does not have.
-# shellcheck disable=SC2086
-docker compose -f "$COMPOSE_FILE" up -d --no-build
+# would need the source this host does not have. The service is named so the
+# desktop profile cannot also start the host-networking one.
+compose up -d --no-build "$SERVICE"
 
 # Wait for the control plane rather than declaring victory on "Started": it
 # generates its secrets and migrates the database on the way up.
@@ -262,16 +263,19 @@ if [ "$READY" -ne 1 ]; then
   say ""
   say "  The control plane did not answer at $LOCAL. Its log:"
   say ""
-  docker compose -f "$COMPOSE_FILE" logs --tail 40 telno 2>&1 || true
+  compose logs --tail 40 "$SERVICE" 2>&1 || true
   fail "The stack was installed but is not running — the reason is at the end of the log above."
 fi
 
 say ""
 say "  Telno is up at $LOCAL"
 say ""
-say "  Sign in as ${TELNO_ADMIN_USER:-admin}. If .env did not set TELNO_ADMIN_PASSWORD,"
-say "  the generated one was printed once at first boot:"
-say "    docker compose -f $COMPOSE_FILE logs telno | grep -A2 'First-run administrator'"
+say "  Sign in as ${TELNO_ADMIN_USER:-admin}. Nothing ships with a password: the"
+say "  first boot generated one and printed it once, here:"
+say "    $COMPOSE_CMD logs $SERVICE | grep -A2 'First-run administrator'"
+say ""
+say "  If that banner is not there, this database already has its administrator and"
+say "  the password is the one set then — Settings → Password changes it."
 say ""
 say "  The installer signed in to fetch the archive; that session is not this install's."
 say ""
