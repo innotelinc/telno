@@ -148,6 +148,21 @@ if (verify) {
     console.error('password NOT changed');
     process.exit(2);
   }
+  if (res.status === 403) {
+    // The console checks the allowlist before it looks at any credential, so a
+    // 403 says nothing about the password. Reporting it as a failed sign-in
+    // sends the operator hunting for the wrong problem.
+    const detail = (await res.text()).slice(0, 160);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(account.password_hash, account.id);
+    try { unlinkSync(rollbackFile); } catch {}
+    console.error(`the console refused the check before reading the password: HTTP 403 ${detail}`);
+    console.error('That is the sign-in allowlist (TELNO_TRUSTED_NETWORKS), not a wrong password:');
+    console.error('127.0.0.1 is not trusted on this install, so nothing here can prove the credential.');
+    console.error('Add 127.0.0.1/32 to the allowlist and run this again — or, if you accept an');
+    console.error('unproved credential, re-run with TELNO_VERIFY=0.');
+    console.error('password NOT changed');
+    process.exit(2);
+  }
   if (res.status !== 200) {
     const detail = (await res.text()).slice(0, 160);
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(account.password_hash, account.id);

@@ -21,15 +21,23 @@ curl -fsS http://<install>/ops/reset-telno-admin.sh -o /root/reset-telno-admin.s
 chmod 700 /root/reset-telno-admin.sh
 ```
 
-It finds the app container by its compose service label
-(`com.docker.compose.service=telno`), reads the database path from the
-container's own `TELNO_DB`, and needs no credentials of its own; running it needs
+It finds the app container by its compose service label — `telno` for host
+networking, or `telno-desktop`, which is what the installer starts on Docker
+Desktop — preferring a container actually named `telno` when more than one
+project runs on the host (`TELNO_CONTAINER` overrides the choice). It then reads
+the administrator's name (`TELNO_ADMIN_USER`) and the database path (`TELNO_DB`)
+from the container itself, and needs no credentials of its own; running it needs
 root only for `docker`.
+
+Two things it refuses to guess at: a container that is not running
+(`… is not running — start it before resetting the password`) or absent, and a
+database that is not there yet (`no database at /data/control-plane.db inside …
+— has the platform booted yet?`).
 
 ### Use
 
 ```bash
-ops/reset-telno-admin.sh                  # the administrator
+ops/reset-telno-admin.sh                  # the administrator, as the install names it
 ops/reset-telno-admin.sh someone          # any other username
 TELNO_VERIFY=0 ops/reset-telno-admin.sh   # app not reachable? skip the check
 ```
@@ -44,8 +52,10 @@ verified   signed in through the app, HTTP 200
 sign in    http://127.0.0.1:8080
 ```
 
-Every session for that user is deleted, including the current browser session.
-The password is printed, never stored.
+Every session for that user is deleted once the new credential has been proved
+— the ones that predate the reset and the one the check itself creates. They are
+deleted *after* the check, not before: when a check fails the old password is put
+back and its sessions stay valid. The password is printed, never stored.
 
 ### Exit codes
 
@@ -59,11 +69,27 @@ The password is printed, never stored.
 
 | variable | default | why |
 | --- | --- | --- |
-| `TELNO_CONTAINER` | auto-detected, else `telno` | several installs on one host |
+| `TELNO_CONTAINER` | auto-detected (`telno` or `telno-desktop`), else `telno` | several installs on one host |
 | `TELNO_DB_PATH` | the container's `TELNO_DB` | point at a copy to rehearse |
 | `TELNO_APP_ORIGIN` | `http://127.0.0.1:8080` | app port inside the container |
 | `TELNO_VERIFY` | `1` | `0` skips the login check |
 | `TELNO_VERIFY_TIMEOUT_MS` | `15000` | a hung app fails instead of hanging |
+
+### When the console answers 403
+
+The console applies its sign-in allowlist **before** it looks at any credential,
+so a 403 says nothing about the password. The script reports it as what it is:
+
+```
+the console refused the check before reading the password: HTTP 403 …
+That is the sign-in allowlist (TELNO_TRUSTED_NETWORKS), not a wrong password:
+127.0.0.1 is not trusted on this install, so nothing here can prove the credential.
+password NOT changed
+```
+
+The default allowlist is loopback plus RFC 1918, so this only appears on an
+install where it was narrowed. Either add `127.0.0.1/32` and run it again, or
+accept an unproved credential with `TELNO_VERIFY=0`.
 
 ### Rehearse without touching the live password
 
@@ -104,5 +130,7 @@ EOF
 - The hash must stay `scrypt$16384$8$1$<salt hex>$<64-byte hex>` with no
   normalization, matching `hashPassword()` in `apps/server/src/db.ts`; anything
   else fails at sign-in.
-- A rate-limited or allowlist-refused check reports HTTP 429/403 and rolls back,
-  rather than looping.
+- A rate-limited check (HTTP 429) rolls back and says so; it does not retry in
+  a loop. A 403 is the allowlist and has its own section above.
+- The container lookup matches `telno` and `telno-desktop` because both services
+  run the same image; a third name has to come from `TELNO_CONTAINER`.
