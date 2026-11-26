@@ -265,6 +265,9 @@ CREATE TABLE IF NOT EXISTS trunks (
   codecs      TEXT NOT NULL DEFAULT 'ulaw,alaw',
   context     TEXT NOT NULL DEFAULT 'from-trunk',
   enabled     INTEGER NOT NULL DEFAULT 1,
+  -- Whether this switch holds a REGISTER binding for the trunk. A carrier
+  -- account another endpoint already registers can still place calls here.
+  register    INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

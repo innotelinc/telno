@@ -152,17 +152,25 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
     const codecs = String(trunk.codecs || 'ulaw,alaw')
       .split(',')
       .map((c) => safe(c, 'ulaw'));
+    out.push(`;[trunk] ${plain(trunk.name)} (${plain(trunk.provider)})`);
+    // A trunk that does not register still has an endpoint, an auth object and an
+    // AOR: outbound calls authenticate on the INVITE. Only the REGISTER is left
+    // out, which is what an account whose binding belongs to another endpoint
+    // needs — the row stops claiming a registration it never wins.
+    if (Number(trunk.register ?? 1) !== 0) {
+      out.push(
+        `[${id}-registration]`,
+        'type=registration',
+        `outbound_auth=${id}-auth`,
+        `server_uri=sip:${host}`,
+        `client_uri=sip:${safe(trunk.username)}@${host}`,
+        'retry_interval=60',
+        'forbidden_retry_interval=600',
+        'expiration=3600',
+        ''
+      );
+    }
     out.push(
-      `;[trunk] ${plain(trunk.name)} (${plain(trunk.provider)})`,
-      `[${id}-registration]`,
-      'type=registration',
-      `outbound_auth=${id}-auth`,
-      `server_uri=sip:${host}`,
-      `client_uri=sip:${safe(trunk.username)}@${host}`,
-      'retry_interval=60',
-      'forbidden_retry_interval=600',
-      'expiration=3600',
-      '',
       `[${id}-auth]`,
       'type=auth',
       'auth_type=userpass',

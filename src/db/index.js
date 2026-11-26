@@ -152,6 +152,11 @@ function migrate(db) {
     // The switch's own file for a fax: the TIFF staged for a send, or the
     // document a receive produced, so the row points at the artefact.
     ['faxes', 'station_id', "TEXT NOT NULL DEFAULT ''"],
+    // Registering is a property of the trunk, not of its usefulness: a carrier
+    // account that another endpoint holds the binding for can still place calls
+    // from here, and the routing document still allows outbound because the
+    // trunk stays enabled. Existing trunks keep registering, as they did.
+    ['trunks', 'register', 'INTEGER NOT NULL DEFAULT 1'],
   ];
   for (const [table, column, type] of additions) {
     if (!db.prepare(`PRAGMA table_info(${table})`).all().some((existing) => existing.name === column)) {

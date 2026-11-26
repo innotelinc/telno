@@ -47,6 +47,7 @@ const trunkView = (row) => ({
   codecs: row.codecs,
   context: row.context,
   enabled: !!row.enabled,
+  register: row.register !== 0,
   hasSecret: !!row.secret,
   updatedAt: row.updated_at,
 });
@@ -250,6 +251,7 @@ export default async function telephonyRoutes(app) {
     if (body.codecs !== undefined) patch.codecs = v.str(body.codecs, { name: 'codecs', max: 60 });
     if (body.context !== undefined) patch.context = v.str(body.context, { name: 'context', max: 40 });
     if (body.enabled !== undefined) patch.enabled = v.bool(body.enabled) ? 1 : 0;
+    if (body.register !== undefined) patch.register = v.bool(body.register) ? 1 : 0;
     if (!Object.keys(patch).length) throw badRequest('Nothing to update');
     const sets = Object.keys(patch).map((k) => `${k} = ?`).join(', ');
     db_.run(`UPDATE trunks SET ${sets}, updated_at = ? WHERE id = ?`, [...Object.values(patch), now(), row.id]);
