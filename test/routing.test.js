@@ -76,7 +76,7 @@ const routeNamed = (doc, name) => doc.routes.find((route) => route.name === name
 const forwardsTo = (route) =>
   (route?.then || []).map((action) => action.forward?.to).filter(Boolean);
 
-test('a DID goes to the line that holds it, in both digit forms', () => {
+test('a DID goes to the line that holds it, once', () => {
   makeTrunk();
   makeNumber({ e164: '+14132642700', extension: '101' });
 
@@ -85,8 +85,9 @@ test('a DID goes to the line that holds it, in both digit forms', () => {
   assert.equal(doc.generator, 'telno');
   assert.deepEqual(routeNamed(doc, 'did-14132642700').when, { to: '14132642700' });
   assert.deepEqual(forwardsTo(routeNamed(doc, 'did-14132642700')), ['ext:101']);
-  // The carrier may send ten digits; the dialplan aliases it and so does this.
-  assert.deepEqual(forwardsTo(routeNamed(doc, 'did-4132642700')), ['ext:101']);
+  // One rule, not one per spelling: the edge normalises E.164 and the national
+  // number to this form before it decides.
+  assert.equal(routeNamed(doc, 'did-4132642700'), undefined);
   // Answer first: a forwarded call that nobody answered is not a transfer.
   assert.deepEqual(routeNamed(doc, 'did-14132642700').then[0], { answer: {} });
 });

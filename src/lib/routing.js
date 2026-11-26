@@ -91,32 +91,25 @@ export function routingDocument({ generatedAt = now() } = {}) {
   for (const row of numbers) {
     const digits = digitsOf(row.e164);
     if (!digits) continue;
-    // Carriers differ on what they put in the request URI for a North American
-    // number: some send eleven digits, some ten. The dialplan aliases the short
-    // form for the same reason, so the document does too.
-    const forms = [digits, digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : ''].filter(Boolean);
+    // One rule per DID. The edge normalises E.164, the national number and the
+    // eleven-digit form before it decides, so a carrier's choice of form does
+    // not need a route of its own.
 
     if (row.fax_mode === 'fax') {
-      for (const form of forms) {
-        add({ name: `did-${form}-fax`, when: { to: form }, then: [{ reject: 3 }] });
-      }
+      add({ name: `did-${digits}-fax`, when: { to: digits }, then: [{ reject: 3 }] });
       continue;
     }
     if (!row.extension || !row.line_enabled) {
       // Ours, but nothing answers it. Refusing is honest; answering and then
       // playing silence is a call the caller cannot tell from a bad line.
-      for (const form of forms) {
-        add({ name: `did-${form}-unrouted`, when: { to: form }, then: [{ reject: 3 }] });
-      }
+      add({ name: `did-${digits}-unrouted`, when: { to: digits }, then: [{ reject: 3 }] });
       continue;
     }
-    for (const form of forms) {
-      add({
-        name: `did-${form}`,
-        when: { to: form },
-        then: [{ answer: {} }, { forward: { to: inboundTarget(row.extension) } }],
-      });
-    }
+    add({
+      name: `did-${digits}`,
+      when: { to: digits },
+      then: [{ answer: {} }, { forward: { to: inboundTarget(row.extension) } }],
+    });
   }
 
   if (trunks.length) {
