@@ -63,7 +63,13 @@ ARG ASTERISK_VERSION=22-current
 RUN curl -fsSL "https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTERISK_VERSION}.tar.gz" \
       | tar xz --strip-components=1
 
+# Asterisk's compiler-flags menu carries BUILD_NATIVE, which adds -march=native
+# whenever the build host supports it. A CI runner does; this i3-550 has no AVX
+# at all, and the resulting binary dies of SIGILL on its first AVX instruction.
+# Build for baseline x86-64 so one image runs on any of these hosts.
 RUN ./configure --with-pjproject-bundled --with-jansson-bundled \
+ && make menuselect.makeopts \
+ && menuselect/menuselect --disable BUILD_NATIVE menuselect.makeopts \
  && make -j"$(nproc)" \
  && make install DESTDIR=/staging \
  # Asterisk builds with -g3; the debug info is most of the module size and is
