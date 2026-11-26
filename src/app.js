@@ -13,6 +13,7 @@ import { errorHandler, forbidden, paymentRequired } from './lib/errors.js';
 import { registerRoutes } from './routes/index.js';
 import { registerWssRelay } from './telephony/wssRelay.js';
 import { registerProvisioning } from './routes/provisioning.js';
+import { registerFaxlineProxy } from './routes/faxline.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'web', 'dist');
@@ -131,6 +132,11 @@ export async function buildApp(opts = {}) {
   // Desk phones fetch their config by MAC with no session. Root, before the
   // static handler, because Option 66 points at http://telno.tel itself.
   await registerProvisioning(app);
+
+  // The fax workspace is a separate process. Proxied here, behind this app's
+  // session, so it is one product with one sign-in; before the static handler
+  // so /faxline/ is a proxy and not an SPA route.
+  await registerFaxlineProxy(app);
 
   if (existsSync(dist)) {
     // The marketing page from `web/landing` ships inside the image and is served

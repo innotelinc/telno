@@ -222,6 +222,9 @@ export default function Numbers() {
                       <td className="tiny muted">{row.country || '—'}</td>
                       <td>
                         <Badge tone={statusTone(row.status)}>{row.status}</Badge>
+                        {row.faxMode && row.faxMode !== 'voice' ? (
+                          <Badge tone="info">{row.faxMode === 'auto' ? 'voice + fax' : 'fax'}</Badge>
+                        ) : null}
                       </td>
                       <td className="align-right tiny mono nowrap">
                         {row.monthlyCostCents ? money(row.monthlyCostCents, row.currency) : <span className="dim">—</span>}

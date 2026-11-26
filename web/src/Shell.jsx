@@ -21,6 +21,10 @@ const GROUPS = [
       { path: '/ivr', label: 'Call routing', icon: 'branch' },
       { path: '/voicemail', label: 'Voicemail', icon: 'voicemail' },
       { path: '/fax', label: 'Fax', icon: 'printer' },
+      // The Faxline workspace runs as its own process and is proxied under this
+      // session; it is an anchor, not a console route, so the router leaves it
+      // alone and the proxy answers with the workspace in the same tab.
+      { path: '/faxline/', label: 'Faxline', icon: 'printer', external: true },
       { path: '/messages', label: 'Messages', icon: 'message' },
     ],
   },
@@ -176,7 +180,14 @@ export default function Shell({ path, title, subtitle, children }) {
             <span className="nav-label">{group.label}</span>
             {group.items
               .filter((item) => !item.firstRun || needsSetup)
-              .map((item) => (
+              .map((item) =>
+                item.external ? (
+                  <a key={item.path} href={item.path} className="nav-item">
+                    <Icon name={item.icon} size={15} />
+                    <span>{item.label}</span>
+                    <Icon name="external" size={12} className="right dim" />
+                  </a>
+                ) : (
               <Link
                 key={item.path}
                 to={item.path}
@@ -187,7 +198,8 @@ export default function Shell({ path, title, subtitle, children }) {
                 <span>{item.label}</span>
                 {item.badge === 'pending' && pending > 0 ? <span className="nav-badge">{pending}</span> : null}
               </Link>
-            ))}
+                ),
+            )}
           </div>
         ))}
 
