@@ -18,6 +18,9 @@ import { join } from 'node:path';
 process.env.NODE_ENV = 'test';
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'telno-routing-'));
 process.env.SESSION_SECRET = 'test-only-session-secret';
+// The gateway's credential. Set before anything imports the config, because the
+// endpoint reads it from there.
+process.env.ROUTING_TOKEN = 'test-routing-token';
 
 const { db_, newId } = await import('../src/db/index.js');
 const { routingDocument, routingDocumentJson, outboundPatterns, OUTBOUND_KEY } = await import(
@@ -145,7 +148,7 @@ test('the operator can change which numbers may leave, and the document follows'
   );
 });
 
-test('the endpoint serves the same bytes a fetch would get, to a key with the scope', async () => {
+test('the endpoint serves the same bytes a fetch would get', async () => {
   const seen = [];
   const app = Fastify();
   app.decorate('authenticateAny', async (request, scope) => {
@@ -155,11 +158,32 @@ test('the endpoint serves the same bytes a fetch would get, to a key with the sc
   app.setErrorHandler(errorHandler);
   await app.register(routingRoutes);
   try {
-    const first = await app.inject({ method: 'GET', url: '/routing/document' });
-    assert.equal(first.statusCode, 200);
+    // The gateway's own credential: a token on both sides, no session, no
+    // key-hash machinery between the control plane and a phone call.
+    const machine = await app.inject({
+      method: 'GET',
+      url: '/routing/document',
+      headers: { 'x-routing-token': 'test-routing-token' },
+    });
+    assert.equal(machine.statusCode, 200);
+    assert.deepEqual(seen, []);
+
+    // Anything else still goes through the normal door.
+    const keyed = await app.inject({ method: 'GET', url: '/routing/document' });
+    assert.equal(keyed.statusCode, 200);
     assert.deepEqual(seen, ['routing:read']);
-    assert.equal(first.headers['cache-control'], 'no-store');
-    const body = JSON.parse(first.payload);
+
+    // A wrong token is not a token: it must not be accepted by accident.
+    const wrong = await app.inject({
+      method: 'GET',
+      url: '/routing/document',
+      headers: { 'x-routing-token': 'not-the-token' },
+    });
+    assert.equal(wrong.statusCode, 200);
+    assert.deepEqual(seen, ['routing:read', 'routing:read']);
+
+    assert.equal(machine.headers['cache-control'], 'no-store');
+    const body = JSON.parse(machine.payload);
     assert.equal(body.generator, 'telno');
     // A reading and an export are the same rules, not two printings of them.
     assert.deepEqual(body.routes.map((route) => route.name), routingDocument().routes.map((r) => r.name));
@@ -168,7 +192,7 @@ test('the endpoint serves the same bytes a fetch would get, to a key with the sc
     const again = await app.inject({
       method: 'GET',
       url: '/routing/document',
-      headers: { 'if-none-match': first.headers.etag },
+      headers: { 'x-routing-token': 'test-routing-token', 'if-none-match': machine.headers.etag },
     });
     assert.equal(again.statusCode, 304);
   } finally {

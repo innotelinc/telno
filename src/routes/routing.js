@@ -1,22 +1,40 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { config } from '../config.js';
 import { routingDocument } from '../lib/routing.js';
+
+/** Constant-time equality, because a token compared with `===` leaks its length. */
+function sameToken(sent, expected) {
+  const a = Buffer.from(String(sent || ''));
+  const b = Buffer.from(String(expected || ''));
+  if (!a.length || a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 /**
  * The routing document, for the machine that places the calls.
  *
- * This is the one endpoint the Cantus gateway reads. It is guarded like any
- * other machine surface — an API key with the `routing:read` scope, or a staff
- * session — because the document says which numbers this platform owns and
- * where each one goes, which is a map of the phone system.
+ * There is one reader: the Cantus gateway, configured with `ROUTING_TOKEN` on
+ * both sides. It is not a user and has no session, so a token is the honest
+ * credential — an API key with the `routing:read` scope still works for anything
+ * else that needs to read the same rules, but the gateway does not depend on the
+ * key-hash machinery to place a call.
  *
  * `ETag` and `no-store` together are deliberate: the gateway polls on its own
- * clock and a proxy must never answer from a cache, but the digest lets a caller
- * tell "same rules" from "rules changed" without diffing the body.
+ * clock and a proxy must never answer from a cache, but the digest lets a
+ * caller tell "same rules" from "rules changed" without diffing the body.
  */
 export default async function routingRoutes(app) {
   app.get(
     '/routing/document',
-    { preHandler: (request) => app.authenticateAny(request, 'routing:read') },
+    {
+      preHandler: async (request) => {
+        if (config.routingToken && sameToken(request.headers['x-routing-token'], config.routingToken)) {
+          request.apiKey = { label: 'cantus-gateway', scope: 'routing:read' };
+          return;
+        }
+        return app.authenticateAny(request, 'routing:read');
+      },
+    },
     async (request, reply) => {
       const document = routingDocument();
       // The digest is over the rules, never over `generated_at`: a document

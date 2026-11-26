@@ -56,6 +56,8 @@ export const config = {
   sessionSecret: env.SESSION_SECRET || '',
   sessionDays: int(env.SESSION_DAYS, 7),
   apiKeyPepper: env.API_KEY_PEPPER || '',
+  // The Cantus gateway reads the routing document with this, on both sides.
+  routingToken: env.ROUTING_TOKEN || '',
 
   // Call recordings, voicemail audio and fax attachments live on the data
   // volume, next to the database, so a container restart keeps them.
