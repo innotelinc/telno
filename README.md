@@ -1,5 +1,9 @@
 # Telno platform 2026
 
+[![CI](https://github.com/innotelinc/telno/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/telno/actions/workflows/ci.yml)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-brightgreen.svg)](LICENSE)
+
+
 The control plane and operator console for the **Telno T750 2026** desk phone and
 **Telno HT802 2026** analog adapter: device inventory, extensions, a shared directory,
 first-party signed provisioning, and voice routing through
@@ -320,3 +324,18 @@ docs/deployment.md image, volume ownership, first boot, rollback
 - The previous platform's live server was unreachable during the rebuild, so no legacy data was
   imported and no legacy UI was copied; see `docs/REPORT.md` for the evidence and the unknowns.
 docs/deployment.md image, volume ownership, first boot, rollback
+
+## Why Telno
+
+| Problem | Telno answer |
+| --- | --- |
+| Fragmented tooling around this job | Telno owns the VoiceOps responsibility as one surface |
+| Ad-hoc configuration and drift | Declarative setup, one identity, one secrets store |
+
+## Platform stack
+
+Telno is the **VoiceOps** platform in the [**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) — the canonical single-responsibility architecture where Authentik owns identity, Cerulean Vault owns secrets, Cerulean owns trust, ONYX owns storage, Magnate owns revenue, and NPM Edge owns the edge. See [docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries.
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
