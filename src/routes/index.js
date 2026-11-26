@@ -19,6 +19,7 @@ import onboardingRoutes from './onboarding.js';
 import secureRoutes from './secure.js';
 import crmRoutes from './crm.js';
 import ataRoutes from './ata.js';
+import routingRoutes from './routing.js';
 
 /** Everything under /api. */
 export async function registerRoutes(app) {
@@ -59,6 +60,8 @@ export async function registerRoutes(app) {
   await app.register(crmRoutes);
   // The analog adaptor: the Telno HT8022026. Reads the box over the LAN with a
   // client that survives its firmware's malformed HTTP, and answers in JSON.
+  // The routing document a Cantus gateway polls: machine-read, key-scoped.
+  await app.register(routingRoutes);
   await app.register(ataRoutes);
 }
 
