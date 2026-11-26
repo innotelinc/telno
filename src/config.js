@@ -120,6 +120,9 @@ export const config = {
     realm: env.CANTUS_REALM || 'telno.tel',
     // host:port of the SIP↔Cantus edge an adaptor registers against.
     sipEdge: env.CANTUS_SIP_EDGE || '',
+    // The password that edge signs its INVITEs with: being on loopback is not
+    // a credential, so the switch challenges it like any other trunk.
+    edgeSecret: env.CANTUS_EDGE_SECRET || '',
   },
 
   // Fax: the switch is the fax machine. res_fax negotiates T.38 with the carrier

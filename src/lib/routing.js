@@ -33,7 +33,7 @@ const digitsOf = (value) => String(value || '').replace(/\D/g, '');
  * (its softphone and its desk phone both ring), so the rule says `sip:`.
  */
 export const inboundTarget = (extension) =>
-  config.cantus.sipEdge ? `sip:${extension}` : `ext:${extension}`;
+  config.cantus.sipEdge && config.cantus.edgeSecret ? `sip:${extension}` : `ext:${extension}`;
 
 /** Where an extension may dial out to. A setting, because it is a policy. */
 export const OUTBOUND_KEY = 'routing.outbound';

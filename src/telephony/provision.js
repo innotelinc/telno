@@ -223,14 +223,24 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
   // its browser softphone, both. It is identified by address rather than a
   // password because the edge is configured with this switch's address, and a
   // call is only sent after the routing document approved it.
-  if (config.cantus.sipEdge) {
+  if (config.cantus.sipEdge && config.cantus.edgeSecret) {
     const edgeHost = String(config.cantus.sipEdge).split(':')[0];
     out.push(
       ';[edge] the Cantus gateway, which delivers inbound DIDs to extensions',
+      '[cantus-edge-auth]',
+      'type=auth',
+      'auth_type=userpass',
+      'username=cantus-edge',
+      `password=${plain(config.cantus.edgeSecret)}`,
+      '',
       '[cantus-edge]',
       'type=endpoint',
       'transport=transport-udp',
       'context=from-internal',
+      // Addressed by the edge's host so the endpoint is chosen, then proved by
+      // the digest above. The identify object alone would accept any process on
+      // that address as the edge.
+      'inbound_auth=cantus-edge-auth',
       'disallow=all',
       'allow=ulaw',
       'allow=alaw',
