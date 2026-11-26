@@ -39,6 +39,28 @@ export const relayTarget = () =>
 /** The URL the browser should use, given the host it reached us on. */
 export const relayUrlFor = (host) => `wss://${host}/ws`;
 
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+/**
+ * The local address the relay's own connection to the switch comes from.
+ *
+ * The switch trusts one loopback address as the gateway peer (`identify
+ * 127.0.0.1`), and an address match is decided before the username one. A
+ * relayed REGISTER would then be identified as that trunk and challenged
+ * against its secret, which no phone can answer: every registration failed as
+ * "Failed to authenticate" while the line's password was correct. Coming from a
+ * second loopback address leaves the trunk's identify alone, so the username in
+ * the request names the browser's own endpoint. Every 127.0.0.0/8 address is
+ * this host, and this hop never leaves the machine.
+ */
+export const relaySourceFor = (target) => {
+  try {
+    return LOOPBACK.has(new URL(target).hostname) ? '127.0.0.2' : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export function registerWssRelay(app) {
   if (!config.softphone.relay) return;
 
@@ -77,6 +99,9 @@ export function registerWssRelay(app) {
         // namespace.
         rejectUnauthorized: false,
         handshakeTimeout: 5000,
+        // Not the switch's own loopback address, so the gateway peer's identify
+        // does not claim the phone's registration — see relaySourceFor().
+        localAddress: relaySourceFor(relayTarget()),
         headers: { 'user-agent': 'telno-wss-relay/1.0' },
       });
     } catch (err) {
