@@ -191,6 +191,13 @@ export const mailjetConfigured = () => !!(mailjetKey() && mailjetSecret());
 /** A From address can be stored too: providers reject a sender they do not own. */
 const emailFrom = () => getSecret('EMAIL_FROM') || config.notify.from;
 
+/**
+ * Replies belong somewhere a person reads. The From address is send-only, so a
+ * Reply-To is set explicitly and can be changed from the console like any other
+ * address; without one, every reply would go to a mailbox nobody opens.
+ */
+const emailReplyTo = () => getSecret('EMAIL_REPLY_TO') || process.env.EMAIL_REPLY_TO || '';
+
 /** Where a credential came from, without disclosing it. */
 const sourceOf = (name, environment) => (getSecret(name) ? 'vault' : environment ? 'environment' : 'none');
 
@@ -287,6 +294,7 @@ async function sendViaMailjet({ to, subject, text, html, attachments }) {
         Messages: [
           {
             From: { Email: emailFrom(), Name: 'Telno' },
+            ...(emailReplyTo() ? { ReplyTo: { Email: emailReplyTo() } } : {}),
             To: [{ Email: to }],
             Subject: subject,
             TextPart: text,
