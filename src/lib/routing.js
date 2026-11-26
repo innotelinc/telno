@@ -1,3 +1,4 @@
+import { config } from '../config.js';
 import { db_, now } from '../db/index.js';
 
 /**
@@ -18,10 +19,21 @@ import { db_, now } from '../db/index.js';
  * gateway evaluates them.
  *
  * `ext:` targets are lines on this platform, `pstn:` means the public network,
- * and a bare `pstn:` in a forward means "the number that was dialled".
+ * and a bare `pstn:` in a forward means "the number that was dialled". When
+ * this deployment has a Cantus edge (`CANTUS_SIP_EDGE`), an inbound DID names
+ * its extension as `sip:` instead: the call is placed over SIP to the switch
+ * that holds the extension, which is where a browser softphone lives.
  */
 
 const digitsOf = (value) => String(value || '').replace(/\D/g, '');
+
+/**
+ * Where a DID for this extension goes. `ext:` is a line the edge reaches over
+ * Cantus; with an edge configured, the extension is answered by a SIP switch
+ * (its softphone and its desk phone both ring), so the rule says `sip:`.
+ */
+export const inboundTarget = (extension) =>
+  config.cantus.sipEdge ? `sip:${extension}` : `ext:${extension}`;
 
 /** Where an extension may dial out to. A setting, because it is a policy. */
 export const OUTBOUND_KEY = 'routing.outbound';
@@ -102,7 +114,7 @@ export function routingDocument({ generatedAt = now() } = {}) {
       add({
         name: `did-${form}`,
         when: { to: form },
-        then: [{ answer: {} }, { forward: { to: `ext:${row.extension}` } }],
+        then: [{ answer: {} }, { forward: { to: inboundTarget(row.extension) } }],
       });
     }
   }

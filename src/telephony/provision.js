@@ -217,6 +217,37 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
     );
   }
 
+  // The Cantus gateway is a SIP peer as well as a registrar on the carrier
+  // side: an inbound DID whose rule names `sip:<extension>` is delivered here
+  // as an ordinary call, and what rings is the extension — its SIP device and
+  // its browser softphone, both. It is identified by address rather than a
+  // password because the edge is configured with this switch's address, and a
+  // call is only sent after the routing document approved it.
+  if (config.cantus.sipEdge) {
+    const edgeHost = String(config.cantus.sipEdge).split(':')[0];
+    out.push(
+      ';[edge] the Cantus gateway, which delivers inbound DIDs to extensions',
+      '[cantus-edge]',
+      'type=endpoint',
+      'transport=transport-udp',
+      'context=from-internal',
+      'disallow=all',
+      'allow=ulaw',
+      'allow=alaw',
+      'direct_media=no',
+      'rtp_symmetric=yes',
+      'force_rport=yes',
+      'rewrite_contact=yes',
+      'timers=no',
+      '',
+      '[cantus-edge-identify]',
+      'type=identify',
+      'endpoint=cantus-edge',
+      `match=${edgeHost}`,
+      ''
+    );
+  }
+
   for (const ext of extensions) {
     // The endpoint is named after the extension itself. chan_pjsip identifies a
     // registration by the user part of the request (`res_pjsip_endpoint_identifier_user`),
