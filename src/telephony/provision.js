@@ -237,10 +237,11 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
       'type=endpoint',
       'transport=transport-udp',
       'context=from-internal',
-      // Addressed by the edge's host so the endpoint is chosen, then proved by
-      // the digest above. The identify object alone would accept any process on
-      // that address as the edge.
-      'inbound_auth=cantus-edge-auth',
+      // `auth` is the endpoint's inbound auth object: the address above only
+      // selects the endpoint, and the digest is what makes it the edge. The
+      // option is `auth`, not `inbound_auth` — this switch rejects the latter
+      // and then drops the whole endpoint, which looks like a routing fault.
+      'auth=cantus-edge-auth',
       'disallow=all',
       'allow=ulaw',
       'allow=alaw',
