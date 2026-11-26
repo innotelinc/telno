@@ -1,3 +1,5 @@
+import { config } from '../config.js';
+
 export class HttpError extends Error {
   constructor(status, code, message, details) {
     super(message);
@@ -34,3 +36,34 @@ export const voiceRequired = (message = 'This line requires a voice check before
 
 /** Wrap an async route so thrown HttpErrors reach the error handler. */
 export const route = (fn) => async (request, reply) => fn(request, reply);
+
+/**
+ * The one place a thrown error becomes a response body.
+ *
+ * Fastify hands every route's rejection to this, so the shape the console parses
+ * is defined once. A test that asserts on a body has to come through here too: a
+ * copy of the mapping drifts the moment a case is added, and then the test keeps
+ * passing while the console receives something else.
+ */
+export function errorHandler(error, request, reply) {
+  if (error instanceof HttpError) {
+    return reply.status(error.status).send({
+      error: { code: error.code, message: error.message, details: error.details },
+    });
+  }
+  if (error.validation) {
+    return reply.status(400).send({
+      error: { code: 'validation_failed', message: error.message, details: error.validation },
+    });
+  }
+  if (error.statusCode === 429) {
+    return reply.status(429).send({ error: { code: 'rate_limited', message: 'Too many requests' } });
+  }
+  request.log.error(error);
+  return reply.status(error.statusCode || 500).send({
+    error: {
+      code: 'internal_error',
+      message: config.isProd ? 'Something went wrong' : error.message,
+    },
+  });
+}

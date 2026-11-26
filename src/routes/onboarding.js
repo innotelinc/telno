@@ -111,7 +111,7 @@ export default async function onboardingRoutes(app) {
       throw conflict('That address is already verified. Ask an operator to change the email on this account.');
     }
     const email = v.email(request.body?.email);
-    if (email.toLowerCase() === String(account.email || '').toLowerCase()) return state(account);
+    if (email === account.email.toLowerCase()) return state(account);
     if (db_.get('SELECT id FROM accounts WHERE lower(email) = lower(?) AND id <> ?', [email, account.id])) {
       throw conflict('Another account already signs in with that email');
     }

@@ -7,7 +7,7 @@
  * verified it is the account's identity, and a code sent to the old address must
  * not be able to prove the new one.
  *
- *   node --test test/
+ *   npm test
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +21,7 @@ process.env.SESSION_SECRET = 'test-only-session-secret';
 
 const { db_, newId, now } = await import('../src/db/index.js');
 const Fastify = (await import('fastify')).default;
-const { HttpError } = await import('../src/lib/errors.js');
+const { errorHandler } = await import('../src/lib/errors.js');
 const onboardingRoutes = (await import('../src/routes/onboarding.js')).default;
 
 function makeAccount({ email, verified = null }) {
@@ -40,18 +40,9 @@ async function withApp(accountId, run) {
   app.decorate('authenticate', async (request) => {
     request.account = db_.get('SELECT * FROM accounts WHERE id = ?', [accountId]);
   });
-  // The shape app.js sends, so the assertions are about the body a console
-  // actually receives rather than Fastify's default error object.
-  app.setErrorHandler((error, request, reply) => {
-    if (error instanceof HttpError) {
-      return reply.status(error.status).send({
-        error: { code: error.code, message: error.message, details: error.details },
-      });
-    }
-    return reply.status(error.statusCode || 500).send({
-      error: { code: 'internal_error', message: error.message },
-    });
-  });
+  // The app's own handler, so the assertions are about the body a console
+  // actually receives rather than a copy of it that can drift.
+  app.setErrorHandler(errorHandler);
   await app.register(onboardingRoutes);
   try {
     return await run(app);

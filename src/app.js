@@ -9,7 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { installAuth } from './plugins/auth.js';
-import { HttpError, forbidden, paymentRequired } from './lib/errors.js';
+import { errorHandler, forbidden, paymentRequired } from './lib/errors.js';
 import { registerRoutes } from './routes/index.js';
 import { registerWssRelay } from './telephony/wssRelay.js';
 import { registerProvisioning } from './routes/provisioning.js';
@@ -119,28 +119,7 @@ export async function buildApp(opts = {}) {
     return payload;
   });
 
-  app.setErrorHandler((error, request, reply) => {
-    if (error instanceof HttpError) {
-      return reply.status(error.status).send({
-        error: { code: error.code, message: error.message, details: error.details },
-      });
-    }
-    if (error.validation) {
-      return reply.status(400).send({
-        error: { code: 'validation_failed', message: error.message, details: error.validation },
-      });
-    }
-    if (error.statusCode === 429) {
-      return reply.status(429).send({ error: { code: 'rate_limited', message: 'Too many requests' } });
-    }
-    request.log.error(error);
-    return reply.status(error.statusCode || 500).send({
-      error: {
-        code: 'internal_error',
-        message: config.isProd ? 'Something went wrong' : error.message,
-      },
-    });
-  });
+  app.setErrorHandler(errorHandler);
 
   await app.register(registerRoutes, { prefix: '/api' });
 
