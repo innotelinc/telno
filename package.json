@@ -19,7 +19,8 @@
     "smoke": "node scripts/smoke.mjs",
     "ata:check": "node scripts/ata-check.mjs",
     "repair:calls": "node scripts/repair-calls.mjs",
-    "inspect": "node scripts/cdp-inspect.mjs"
+    "inspect": "node scripts/cdp-inspect.mjs",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.3",

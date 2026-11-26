@@ -2,7 +2,7 @@ import { db_, now } from '../db/index.js';
 import { config } from '../config.js';
 import { checkCode, maskTarget, onboardingState, sendCode, sendWelcome, TERMS_TEXT, TERMS_VERSION } from '../lib/onboarding.js';
 import { saveProfile } from '../lib/profile.js';
-import { badRequest } from '../lib/errors.js';
+import { badRequest, conflict } from '../lib/errors.js';
 import { logEvent } from '../lib/audit.js';
 import { deliverNotice, providerFor } from '../lib/channels.js';
 import { welcomeEmail } from '../lib/mail.js';
@@ -93,6 +93,42 @@ export default async function onboardingRoutes(app) {
       profile: result.profile,
       applied: result.applied,
     };
+  });
+
+  /**
+   * Change the address the verification code goes to.
+   *
+   * The account is created with whatever the operator typed at first boot, and
+   * until this existed the wizard could only ever send to that one — somebody who
+   * cannot open that mailbox had no way through the required step. It is allowed
+   * only while the address is still unverified: once it is verified the address
+   * is the account's identity, and moving it is an operator's job rather than a
+   * wizard step.
+   */
+  app.post('/onboarding/email/address', async (request) => {
+    const account = request.account;
+    if (account.email_verified_at) {
+      throw conflict('That address is already verified. Ask an operator to change the email on this account.');
+    }
+    const email = v.email(request.body?.email);
+    if (email.toLowerCase() === String(account.email || '').toLowerCase()) return state(account);
+    if (db_.get('SELECT id FROM accounts WHERE lower(email) = lower(?) AND id <> ?', [email, account.id])) {
+      throw conflict('Another account already signs in with that email');
+    }
+    db_.run('UPDATE accounts SET email = ? WHERE id = ?', [email, account.id]);
+    // A code already sent to the old address must not verify the new one.
+    db_.run(
+      "DELETE FROM account_verifications WHERE account_id = ? AND channel = 'email' AND used_at IS NULL",
+      [account.id]
+    );
+    logEvent({
+      actor: account.email,
+      action: 'onboarding.email_changed',
+      subject: account.id,
+      detail: maskTarget(email),
+      ip: request.ip,
+    });
+    return state(db_.get('SELECT * FROM accounts WHERE id = ?', [account.id]));
   });
 
   /** Send a code to the account's own address — never to one supplied here. */

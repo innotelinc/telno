@@ -27,6 +27,7 @@ export default function Onboarding() {
   const [profile, setProfile] = useState(null);
   const [code, setCode] = useState({ email: '', phone: '' });
   const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
   const [sent, setSent] = useState({ email: '', phone: '' });
   const [line, setLine] = useState({ extension: '101', displayName: '', number: '' });
   const [buy, setBuy] = useState({ query: '', region: '', items: [] });
@@ -44,6 +45,7 @@ export default function Onboarding() {
       directoryOptIn: current?.directoryOptIn ?? data.profile.directoryOptIn ?? null,
     }));
     setPhone((current) => current || data.phone.number || '');
+    setAddress((current) => current || data.email.address || '');
     setLine((current) => ({ ...current, displayName: current.displayName || data.profile.name || '' }));
     return data;
   };
@@ -321,6 +323,33 @@ export default function Onboarding() {
 
                   {active && step.id === 'email' ? (
                     <div className="stack" style={{ marginTop: 12, gap: 12 }}>
+                      <div className="row wrap" style={{ gap: 10, alignItems: 'flex-end' }}>
+                        <Input
+                          label="Email address"
+                          type="email"
+                          inputMode="email"
+                          autoComplete="email"
+                          value={address}
+                          onChange={(event) => setAddress(event.target.value)}
+                          hint="Where the code goes, and the address you sign in with."
+                        />
+                        <Button
+                          loading={busy === 'email-address'}
+                          disabled={
+                            !address.trim() ||
+                            address.trim().toLowerCase() === String(state.email.address || '').toLowerCase()
+                          }
+                          onClick={() =>
+                            run(
+                              'email-address',
+                              () => api.post('/onboarding/email/address', { email: address.trim() }),
+                              'Email address updated'
+                            )
+                          }
+                        >
+                          Use this address
+                        </Button>
+                      </div>
                       <div className="row wrap" style={{ gap: 10, alignItems: 'flex-end' }}>
                         <Input
                           label="Code from the email"
