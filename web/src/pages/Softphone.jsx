@@ -6,6 +6,7 @@ import { readLine, saveLine } from '../softphoneLine.js';
 import { MASK_MODES, createVoiceMask, previewMaskedVoice } from '../voiceMask.js';
 import VoicePanel from '../VoicePanel.jsx';
 import { digitsFromSpeech, recognitionSupported, startDictation } from '../speech.js';
+import { primeRingtone, startRingtone, stopRingtone } from '../ringtone.js';
 import { watchCalls } from '../native.js';
 import {
   biometry,
@@ -420,6 +421,9 @@ export default function Softphone() {
     sessionRef.current = null;
     pcRef.current = null;
     stopMedia();
+    // Hanging up while it rings is a cancel; the tone must stop with the call.
+    stopRingtone();
+    setIncoming(false);
     setCall(null);
     setMuted(false);
     setCameraOn(false);
@@ -518,6 +522,9 @@ export default function Softphone() {
       setConnectError('Locked — unlock with Face ID to bring this line up.');
       return;
     }
+    // A ringing browser needs an AudioContext that was created and resumed
+    // under a click, and connecting is the click that precedes every call.
+    primeRingtone();
     setConnecting(!auto);
     setConnectError('');
     try {
@@ -580,6 +587,11 @@ export default function Softphone() {
             }
           }
           if (state === 'Terminated') {
+            // The caller gave up, or another phone took the call: the panel and the
+            // tone go with the dialog instead of waiting for a button that can no
+            // longer do anything.
+            setIncoming(false);
+            stopRingtone();
             sessionRef.current = null;
             pcRef.current = null;
             stopMedia();
@@ -619,6 +631,7 @@ export default function Softphone() {
             attach(invitation);
             setCall({ state: 'ringing', direction: 'inbound', peer: invitation.remoteIdentity?.uri?.user || 'unknown' });
             setIncoming(true);
+            startRingtone();
             sendPresence('ringing', invitation.remoteIdentity?.uri?.user || '');
             // Answer with the same media preferences as an outgoing call.
             constraintsRef.current = constraints;
@@ -793,6 +806,7 @@ export default function Softphone() {
   useEffect(
     () => () => {
       clearTimeout(reconnectTimer.current);
+      stopRingtone();
     },
     []
   );
@@ -900,6 +914,7 @@ export default function Softphone() {
     const invitation = sessionRef.current;
     if (!invitation) return;
     setIncoming(false);
+    stopRingtone();
     // Answer with the media this offer actually carries. The line defaults to
     // video, and asking for the camera on an audio-only call opens the device
     // and waits for it before the answer is sent — the caller keeps hearing
@@ -920,6 +935,7 @@ export default function Softphone() {
 
   const decline = async () => {
     setIncoming(false);
+    stopRingtone();
     try {
       await sessionRef.current?.reject();
     } catch {
