@@ -82,8 +82,16 @@ const TWO_DIGIT = new Set([
 
 export function prettyNumber(value) {
   if (!value) return '';
-  const digits = String(value).replace(/[^\d]/g, '');
+  const raw = String(value);
+  const digits = raw.replace(/[^\d]/g, '');
   if (!digits || digits.length < 6) return value;
+  // A ten-digit number without a `+` is only complete without a country code in
+  // the North American Numbering Plan, which is this platform's default region.
+  // Guessing from the leading digits alone reads the bare caller ID 4132642700
+  // as "+41 326 427 00" — a Swiss number — because 41 is a real country code.
+  if (!raw.startsWith('+') && digits.length === 10 && /^[2-9]/.test(digits)) {
+    return `+1 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
   const dialLen = digits.startsWith('1') || digits.startsWith('7') ? 1 : TWO_DIGIT.has(digits.slice(0, 2)) ? 2 : 3;
   const dial = digits.slice(0, dialLen);
   const rest = digits.slice(dialLen);
