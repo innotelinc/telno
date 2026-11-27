@@ -4,7 +4,7 @@ import { db_, newId, now } from '../db/index.js';
 import { config } from '../config.js';
 import { logEvent } from '../lib/audit.js';
 import { onFaxEvent } from '../lib/fax.js';
-import { asteriskTime, directionFor, DISPOSITIONS, mergeFields, realDestination } from './call-log.js';
+import { asteriskTime, directionFor, DISPOSITIONS, mergeFields, realDestination, trunkForChannel } from './call-log.js';
 
 const channels = new Map();
 // Every leg of one call carries the same Linkedid: the Local channel wrapper,
@@ -234,18 +234,22 @@ export function ingestEvent(msg) {
         const duration = Math.max(0, Math.round((endedAt - (info.started || endedAt)) / 1000));
         const billsec = info.answered ? Math.max(0, Math.round((endedAt - info.answered) / 1000)) : 0;
         const context = msg.Context || info.context;
+        // The leg, not the context, says where the call came from: an inbound
+        // carrier call reaches this switch on `PJSIP/cantus-edge-…` and walks a
+        // `from-internal` context so it can ring a line.
+        const channel = info.channel || msg.Channel || '';
         const call = callKey(msg);
         // The channel outlives the leg in the CDR that follows, so remember it
         // here as well: the record can arrive before or after this event.
         rememberChannel(msg.Channel || info.channel, call);
         mergeCall(call, {
-          direction: directionFor(context),
+          direction: directionFor(context, channel),
           from_number: info.from,
           to_number: info.dialed || info.to,
           // The line a call was made on, when the switch names a number here: a
           // Local channel reports `s`, which is a dialplan label, not a line.
           extension: context === 'internal' ? realDestination(info.to) : '',
-          trunk: (info.channel.match(/trunk-([A-Za-z0-9_.-]+)-/)?.[1] || ''),
+          trunk: trunkForChannel(channel),
           started_at: new Date(info.started || endedAt).toISOString(),
           answered_at: answered,
           ended_at: new Date(endedAt).toISOString(),
@@ -269,10 +273,12 @@ export function ingestEvent(msg) {
       case 'Cdr': {
         // cdr_manager gives us authoritative values; they win over estimates.
         const patch = {
-          direction: directionFor(msg.DestinationContext),
+          direction: directionFor(msg.DestinationContext, msg.Channel),
           from_number: msg.Source || '',
           to_number: msg.Destination || '',
-          trunk: msg.LastApplication === 'Dial' ? msg.LastData || '' : '',
+          // The trunk column names the leg the call used, never the dialplan's
+          // dial string: `PJSIP/webrtc-101,25,tT` is a target, not a trunk.
+          trunk: trunkForChannel(msg.Channel),
           started_at: asteriskTime(msg.StartTime) || now(),
           answered_at: asteriskTime(msg.AnswerTime),
           ended_at: asteriskTime(msg.EndTime),

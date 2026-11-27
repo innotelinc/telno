@@ -32,6 +32,11 @@ const DIRECTION_RANK = { internal: 0, inbound: 1, outbound: 1 };
 // Dialplan labels the switch reports where a real number belongs.
 const PSEUDO_EXTEN = new Set(['s', 'h', 'i', 't', 'T', 'e', 'o', 'a', 'fax', 'parked']);
 
+// The endpoint the Cantus gateway rings on its way in. A carrier call reaches
+// this switch through it, so the leg says "this came from outside" no matter
+// which dialplan context the call is handed to next.
+const EDGE_ENDPOINT = 'cantus-edge';
+
 const rank = (table, value) => (value in table ? table[value] : -1);
 
 const number = (value) => {
@@ -65,10 +70,52 @@ export function realCaller(value) {
   return text;
 }
 
-export function directionFor(context) {
-  if (!context) return 'internal';
-  if (context.startsWith('from-trunk') || context.startsWith('from-pstn')) return 'inbound';
-  if (context.startsWith('outbound')) return 'outbound';
+/**
+ * The endpoint a channel belongs to: `PJSIP/cantus-edge-0000001a` →
+ * `cantus-edge`, `PJSIP/webrtc-101-0000001b` → `webrtc-101`. Asterisk appends
+ * an eight-digit sequence number to every channel it creates; without it the
+ * name is the endpoint as the config knows it.
+ */
+export function legFromChannel(channel) {
+  const text = String(channel ?? '').trim();
+  if (!text) return '';
+  const cut = /^(?:PJSIP|SIP|Local|DAHDI|IAX2)\/(.+)$/.exec(text);
+  const rest = cut ? cut[1] : text;
+  return rest.replace(/-[0-9a-f]{8}$/i, '');
+}
+
+/**
+ * The trunk column's value for a channel, or '' when the leg is not a trunk.
+ *
+ * A call that arrived through the gateway is recorded as `cantus-edge` — that
+ * is the leg the carrier call landed on. A leg this switch dialled out through
+ * keeps naming its trunk (`trunk-voipms-…` → `voipms`). A line's own leg is not
+ * a trunk and must not be recorded as one, which is why `webrtc-101` yields ''.
+ */
+export function trunkForChannel(channel) {
+  const leg = legFromChannel(channel);
+  if (!leg) return '';
+  if (leg === EDGE_ENDPOINT) return EDGE_ENDPOINT;
+  const trunk = /^trunk-(.+)$/.exec(leg);
+  return trunk ? trunk[1] : '';
+}
+
+/**
+ * Which way a call went, from the context *and* the leg that spoke.
+ *
+ * The context alone is not enough. The gateway's edge endpoint carries
+ * `context=from-internal`, because that is the context that can ring a line by
+ * extension number, so every inbound carrier call used to be logged as an
+ * internal call: `direction: internal` with the dialplan's
+ * `PJSIP/webrtc-101,25,tT` in the trunk column. The leg is the fact that
+ * settles it — a call on `cantus-edge` came from the carrier, whatever the
+ * dialplan does with it afterwards.
+ */
+export function directionFor(context, channel = '') {
+  const ctx = String(context ?? '');
+  if (ctx.startsWith('outbound')) return 'outbound';
+  if (ctx.startsWith('from-trunk') || ctx.startsWith('from-pstn')) return 'inbound';
+  if (legFromChannel(channel) === EDGE_ENDPOINT) return 'inbound';
   return 'internal';
 }
 
