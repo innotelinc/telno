@@ -4,7 +4,7 @@ import { db_, newId, now } from '../db/index.js';
 import { config } from '../config.js';
 import { logEvent } from '../lib/audit.js';
 import { onFaxEvent } from '../lib/fax.js';
-import { asteriskTime, directionFor, DISPOSITIONS, mergeFields, realDestination, trunkForChannel } from './call-log.js';
+import { asteriskTime, dialledDid, directionFor, DISPOSITIONS, mergeFields, realDestination, trunkForChannel } from './call-log.js';
 
 const channels = new Map();
 // Every leg of one call carries the same Linkedid: the Local channel wrapper,
@@ -275,7 +275,11 @@ export function ingestEvent(msg) {
         const patch = {
           direction: directionFor(msg.DestinationContext, msg.Channel),
           from_number: msg.Source || '',
-          to_number: msg.Destination || '',
+          // The peer is dialled by extension, so a carrier call's Destination is
+          // the line that answered (`101`), not the number the caller dialled.
+          // The dialplan carries that number from the gateway's leg into the
+          // CDR's user field, and it is the destination when it is there.
+          to_number: dialledDid(msg.UserField) || msg.Destination || '',
           // The trunk column names the leg the call used, never the dialplan's
           // dial string: `PJSIP/webrtc-101,25,tT` is a target, not a trunk.
           trunk: trunkForChannel(msg.Channel),

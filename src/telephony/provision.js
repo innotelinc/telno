@@ -562,7 +562,15 @@ function dialplan(extensions, trunks, flows, dids, agentPolicy = new Map(), park
     ' same => n,Hangup()',
     '',
     '[from-internal]',
-    'exten => _X.,1,Goto(internal,${EXTEN},1)',
+    // The gateway dials this switch by extension (`sip:101`), so a carrier call
+    // arrives addressed to the line and the number it was dialled on travels
+    // beside it as a header. Read it where the edge's call enters the dialplan:
+    // the call log names a call by its DID and the fax handler files by it, and
+    // the CDR is given it because the user field is the one field a CDR may be
+    // set to and the log is built from CDRs.
+    'exten => _X.,1,Set(__TELNO_DID=${PJSIP_HEADER(read,X-Cantus-DID)})',
+    ' same => n,Set(CDR(userfield)=${TELNO_DID})',
+    ' same => n,Goto(internal,${EXTEN},1)',
     'exten => _+X.,1,Goto(outbound,${EXTEN},1)',
     ''
   );

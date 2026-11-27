@@ -62,6 +62,40 @@ export function realDestination(value) {
   return /\d/.test(text) ? text : '';
 }
 
+// A DID is ten or more digits. Anything shorter is an extension, which is a
+// destination of a different kind and never the number a caller dialled.
+const DID_DIGITS = /^\d{10,15}$/;
+
+/**
+ * The number a call was dialled on, from the field the dialplan wrote.
+ *
+ * A carrier call that arrives through the gateway is addressed by extension, so
+ * its CDR names the line that answered (`101`) rather than the number the
+ * caller dialled. The dialplan reads the DID off the gateway's leg and writes it
+ * to the CDR's user field — the one field a CDR may be given — and that value is
+ * the destination. A short number is an extension and is not taken as one, so a
+ * stray value in that field cannot invent a DID.
+ */
+export function dialledDid(value) {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  return DID_DIGITS.test(digits) ? digits : '';
+}
+
+/**
+ * The destination to keep when two events describe the same call.
+ *
+ * The number that was dialled outranks the extension the switch rang in its
+ * place, whichever event is heard first, because it is the destination the
+ * operator was called on. A dialplan label loses to both.
+ */
+function destinationFor(existing, patch) {
+  const keep = realDestination(existing);
+  const next = realDestination(patch);
+  if (!keep) return next;
+  if (!next) return keep;
+  return !dialledDid(keep) && dialledDid(next) ? next : keep;
+}
+
 /** A caller worth recording: not the switch's placeholder for "anonymous". */
 export function realCaller(value) {
   const text = String(value ?? '').trim();
@@ -153,7 +187,7 @@ export function mergeFields(existing = {}, patch = {}) {
         ? patch.direction
         : existing.direction || patch.direction || 'inbound',
     from_number: realCaller(existing.from_number) || realCaller(patch.from_number),
-    to_number: realDestination(existing.to_number) || realDestination(patch.to_number),
+    to_number: destinationFor(existing.to_number, patch.to_number),
     extension: existing.extension || patch.extension || '',
     trunk: existing.trunk || patch.trunk || '',
     started_at: earliest(existing.started_at, patch.started_at),
