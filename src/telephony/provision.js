@@ -308,7 +308,14 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
       'context=internal',
       `from_domain=${sipDomain()}`,
       'disallow=all',
-      'allow=opus',
+      // PCMU and PCMA only. The browser encodes both natively, and every leg it
+      // can be bridged to — the Cantus edge and the carrier trunk — is
+      // ulaw/alaw. `opus` used to be listed first and won the negotiation with
+      // Chrome, after which an answered DID could not be joined to the edge at
+      // all: "No path to translate from PJSIP/webrtc-101 to
+      // PJSIP/cantus-edge", and the call was dropped 23 seconds in. This image
+      // ships res_format_attr_opus but no codec_opus, so there is no transcode
+      // to fall back on; offering a codec nothing here can reach is a trap.
       'allow=ulaw',
       'allow=alaw',
       ...(config.softphone.video ? ['allow=vp8', 'allow=h264', 'max_video_streams=1'] : ['max_video_streams=0']),
