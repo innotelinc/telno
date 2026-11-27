@@ -31,10 +31,10 @@ db_.run(
 );
 
 test('the dialled number is readable, and an extension is not one', () => {
-  // Both forms a carrier hands over, and the E.164 form the DID row holds.
-  assert.equal(dialledDid('4132642700'), '4132642700');
-  assert.equal(dialledDid('14132642700'), '14132642700');
-  assert.equal(dialledDid('+1 (413) 264-2700'), '14132642700');
+  // Every form a carrier hands over collapses to the one the console stores.
+  assert.equal(dialledDid('4132642700'), '+14132642700');
+  assert.equal(dialledDid('14132642700'), '+14132642700');
+  assert.equal(dialledDid('+1 (413) 264-2700'), '+14132642700');
 
   // The line that answered is not the number that was dialled, and a field that
   // carries something else entirely must not be turned into a DID.
@@ -58,14 +58,34 @@ test('the row keeps the DID, whichever event is heard first', () => {
     [cdr, edge],
   ]) {
     const merged = mergeFields(first, second);
-    // The carrier's number, not the extension it was mapped onto.
-    assert.equal(merged.to_number, '14132642700');
+    // The carrier's number, not the extension it was mapped onto, and in the
+    // one form the console stores numbers in.
+    assert.equal(merged.to_number, '+14132642700');
     assert.equal(merged.direction, 'inbound');
   }
 
   // A later event that only names the extension cannot take the DID back.
   const settled = mergeFields(mergeFields(edge, cdr), { to_number: '101' });
-  assert.equal(settled.to_number, '14132642700');
+  assert.equal(settled.to_number, '+14132642700');
+});
+
+test('a row written from a call matches the number the console holds', () => {
+  // The DID as the console stores it: `numbers.e164` is the key every other
+  // table joins on, so a call row naming the ten-digit form is a second number
+  // nothing can be matched to.
+  const numberId = newId('num_');
+  db_.run(
+    'INSERT INTO numbers (id, e164, country, national, status, fax_mode) VALUES (?, ?, ?, ?, ?, ?)',
+    [numberId, '+14132642700', 'US', '4132642700', 'active', 'voice']
+  );
+  const stored = db_.get('SELECT e164 FROM numbers WHERE id = ?', [numberId]).e164;
+
+  // The carrier sends it as the dialled party; the dialplan writes it to the CDR
+  // user field in whichever spelling the switch had.
+  for (const asSent of ['4132642700', '14132642700', '+14132642700']) {
+    const row = mergeFields({}, { direction: 'inbound', to_number: dialledDid(asSent) });
+    assert.equal(row.to_number, stored, `${asSent} did not match numbers.e164`);
+  }
 });
 
 test('the dialplan reads the DID off the gateway leg, and files it in the CDR', () => {

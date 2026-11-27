@@ -62,8 +62,12 @@ What to know before changing any of it:
   fails — `to_number` silently falls back to the extension, and the record stops
   naming the destination that was dialled. `test/call-log-inbound-did.test.js`
   guards the generated dialplan and the merge order.
-- **The value has to look like a DID.** `dialledDid()` accepts 10–15 digits, so a
-  stray value in `userfield` cannot be mistaken for a dialled number.
+- **The value is normalised to E.164.** `dialledDid()` accepts 10–15 digits and
+  returns `numbers.e164`'s form (`+14132642700`), using `src/lib/e164.js` — the same
+  rule every other table is keyed on. A carrier sends ten digits and the switch
+  writes eleven, so storing either as-is would put one number in the row under a
+  form nothing else can be joined to. A short value is an extension and yields
+  nothing, so a stray `userfield` cannot invent a DID.
 - **Only answered calls carry it.** `cdr_manager` is configured with `Log unanswered
   calls: No`, so a missed inbound call is built from the AMI `Hangup` event, which
   has no CDR, and its `to_number` stays the extension. Changing that means logging
