@@ -359,8 +359,20 @@ function pjsip(extensions, trunks, tls = tlsPaths()) {
   return out.filter((line) => line !== undefined).join('\n');
 }
 
-/** Both endpoints of one extension, for a parallel ring. */
-const ringTargets = (num) => `PJSIP/${safe(num)}&PJSIP/${sectionName('webrtc', num)}`;
+/**
+ * Both endpoints of one extension, for a parallel ring.
+ *
+ * A desk-phone endpoint is generated for every extension whether or not a
+ * handset ever registers against it. Dialing it unconditionally makes Asterisk
+ * invent a request URI for an AOR with no contact, and the only name it has to
+ * fall back to is this container's own hostname — which does not resolve inside
+ * the container — so every call logs `getaddrinfo("telno")` and "No route to
+ * destination" before the browser leg is tried. `PJSIP_DIAL_CONTACTS` is empty
+ * until a handset registers, so the desk leg is dialed only when there is
+ * something to ring and the browser is not left waiting on a dead branch.
+ */
+const ringTargets = (num) =>
+  `\${IF($["\${PJSIP_DIAL_CONTACTS(${safe(num)})}" != ""]?PJSIP/${safe(num)}&)}PJSIP/${sectionName('webrtc', num)}`;
 
 /** Where the switch keeps received documents and outbound staging files. */
 export const faxDir = () => String(config.fax.dir || join(config.dataDir, 'faxes')).replace(/\/+$/, '');
@@ -483,7 +495,7 @@ function dialplan(extensions, trunks, flows, dids, agentPolicy = new Map(), park
   // endpoint names are namespaced, so the pattern has to build them; a bare
   // `PJSIP/${EXTEN}` would ask for an endpoint that never exists.
   out.push(
-    'exten => _1XX,1,Dial(PJSIP/${EXTEN}&PJSIP/webrtc-${EXTEN},25,tT)',
+    'exten => _1XX,1,Dial(${IF($["${PJSIP_DIAL_CONTACTS(${EXTEN})}" != ""]?PJSIP/${EXTEN}&)}PJSIP/webrtc-${EXTEN},25,tT)',
     ' same => n,Hangup()',
     ''
   );

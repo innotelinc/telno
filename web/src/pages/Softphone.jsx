@@ -900,9 +900,18 @@ export default function Softphone() {
     const invitation = sessionRef.current;
     if (!invitation) return;
     setIncoming(false);
+    // Answer with the media this offer actually carries. The line defaults to
+    // video, and asking for the camera on an audio-only call opens the device
+    // and waits for it before the answer is sent — the caller keeps hearing
+    // ringing long after Answer was pressed, and an encoder runs for a stream
+    // nobody is watching.
+    const constraints = constraintsRef.current || { audio: true, video: false };
+    const offeredVideo = /^m=video\b/m.test(String(invitation.request?.body || ''));
     try {
       await invitation.accept({
-        sessionDescriptionHandlerOptions: { constraints: constraintsRef.current || { audio: true, video: false } },
+        sessionDescriptionHandlerOptions: {
+          constraints: offeredVideo ? constraints : { ...constraints, video: false },
+        },
       });
     } catch (err) {
       toast.error('Could not answer', err.message);
