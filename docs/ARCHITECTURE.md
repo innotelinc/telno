@@ -35,6 +35,40 @@ switch  ──AMI───►  Node ──► events            channels map →
 switch  ──AMI───◄  Node                       Command: pjsip reload / dialplan reload
 ```
 
+### Inbound calls through the gateway edge
+
+A carrier call does not reach this switch addressed to a DID. The Cantus gateway
+takes the carrier's INVITE, decides the destination from the routing document and
+**dials this switch by extension** — `sip:101` — because `from-internal` is the
+context that can ring a line by number. Everything after that is ordinary Asterisk,
+with one consequence: the CDR's `Destination` is the line that answered, so
+`calls.to_number` would read `101` for a call placed to 413-264-2700.
+
+The dialled number rides in-band to fix exactly that:
+
+1. The gateway stamps `X-Cantus-DID: <dialled number>` on the leg it places here
+   (documented in cantus `docs/stack.md`, "The SIP edge: what a peer INVITE carries").
+2. `[from-internal]` in the generated dialplan reads it once, where the edge's call
+   enters: `Set(__TELNO_DID=${PJSIP_HEADER(read,X-Cantus-DID)})`.
+3. It writes that into `Set(CDR(userfield)=${TELNO_DID})`. `userfield` is the only
+   free-form field Asterisk lets the dialplan set that `cdr_manager` then sends over
+   AMI. `src/telephony/index.js` reads it as `msg.UserField`, and `call-log.js`
+   prefers a DID (ten or more digits) over an extension when both describe one call,
+   in either arrival order.
+
+What to know before changing any of it:
+
+- **The two halves are one contract.** Drop the `CDR(userfield)` line and nothing
+  fails — `to_number` silently falls back to the extension, and the record stops
+  naming the destination that was dialled. `test/call-log-inbound-did.test.js`
+  guards the generated dialplan and the merge order.
+- **The value has to look like a DID.** `dialledDid()` accepts 10–15 digits, so a
+  stray value in `userfield` cannot be mistaken for a dialled number.
+- **Only answered calls carry it.** `cdr_manager` is configured with `Log unanswered
+  calls: No`, so a missed inbound call is built from the AMI `Hangup` event, which
+  has no CDR, and its `to_number` stays the extension. Changing that means logging
+  unanswered CDRs, which adds a row to every failed call.
+
 ## Data model
 
 ```
