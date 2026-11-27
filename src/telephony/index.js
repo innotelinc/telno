@@ -4,7 +4,7 @@ import { db_, newId, now } from '../db/index.js';
 import { config } from '../config.js';
 import { logEvent } from '../lib/audit.js';
 import { onFaxEvent } from '../lib/fax.js';
-import { asteriskTime, dialledDid, directionFor, DISPOSITIONS, mergeFields, realDestination, trunkForChannel } from './call-log.js';
+import { asteriskTime, directionFor, DISPOSITIONS, mergeFields, realDestination, trunkForChannel } from './call-log.js';
 
 const channels = new Map();
 // Every leg of one call carries the same Linkedid: the Local channel wrapper,
@@ -245,7 +245,10 @@ export function ingestEvent(msg) {
         mergeCall(call, {
           direction: directionFor(context, channel),
           from_number: info.from,
-          to_number: info.dialed || info.to,
+          // The extension the call entered on is the destination worth keeping;
+          // `dialed` on this channel is the dial string (`PJSIP/webrtc-101,25,tT`),
+          // which is a target, not a number.
+          to_number: realDestination(info.to) || info.dialed,
           // The line a call was made on, when the switch names a number here: a
           // Local channel reports `s`, which is a dialplan label, not a line.
           extension: context === 'internal' ? realDestination(info.to) : '',
@@ -275,11 +278,9 @@ export function ingestEvent(msg) {
         const patch = {
           direction: directionFor(msg.DestinationContext, msg.Channel),
           from_number: msg.Source || '',
-          // The peer is dialled by extension, so a carrier call's Destination is
-          // the line that answered (`101`), not the number the caller dialled.
-          // The dialplan carries that number from the gateway's leg into the
-          // CDR's user field, and it is the destination when it is there.
-          to_number: dialledDid(msg.UserField) || msg.Destination || '',
+          // A gateway call arrives addressed to the number that was dialled, so
+          // the CDR's Destination is the DID, not the line it eventually rang.
+          to_number: msg.Destination || '',
           // The trunk column names the leg the call used, never the dialplan's
           // dial string: `PJSIP/webrtc-101,25,tT` is a target, not a trunk.
           trunk: trunkForChannel(msg.Channel),

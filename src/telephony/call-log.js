@@ -68,30 +68,31 @@ export function realDestination(value) {
 // destination of a different kind and never the number a caller dialled.
 const DID_DIGITS = /^\d{10,15}$/;
 
+const didDigits = (value) => {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  return DID_DIGITS.test(digits) ? digits : '';
+};
+
 /**
  * The number a call was dialled on, in the one form the console stores numbers
  * in: `numbers.e164`, `+14132642700`.
  *
- * A carrier call that arrives through the gateway is addressed by extension, so
- * its CDR names the line that answered (`101`) rather than the number the
- * caller dialled. The dialplan reads the DID off the gateway's leg and writes it
- * to the CDR's user field — the one field a CDR may be given — and that value is
- * the destination.
+ * A carrier call reaches this switch through the gateway addressed to the number
+ * that was dialled — the gateway forwards the DID and `[registry]` maps it to a
+ * line — so the number is already the CDR's destination. It is normalised here
+ * rather than kept as it arrived because the carrier sends ten digits and the
+ * request-URI carries eleven: the same number in two forms is a number the
+ * console cannot match against `numbers`, the directory or a carrier export.
+ * `normalizeNumber` is the platform's own E.164 rule, so a row written from a
+ * call compares equal to the row the DID was bought as.
  *
- * It is normalised here rather than stored as it arrived, because the carrier
- * sends ten digits and the switch writes eleven: the same number in two forms is
- * a number the console cannot match against `numbers`, the directory or a
- * carrier export. `normalizeNumber` is the platform's own E.164 rule, so a row
- * written from a call compares equal to the row a DID was bought as.
- *
- * A short number is an extension and is not taken as a DID, so a stray value in
- * that field cannot invent one.
+ * A short number is an extension and is not taken as a DID, so a dialplan label
+ * or a stray value cannot invent one.
  */
 export function dialledDid(value) {
-  const text = String(value ?? '').trim();
-  const digits = text.replace(/\D/g, '');
-  if (!DID_DIGITS.test(digits)) return '';
-  const parsed = normalizeNumber(text);
+  const digits = didDigits(value);
+  if (!digits) return '';
+  const parsed = normalizeNumber(String(value).trim());
   // A number libphonenumber will not vouch for is kept as digits rather than
   // discarded: a DID nobody can parse is still the number the caller dialled.
   return parsed.ok ? parsed.e164 : `+${digits}`;
@@ -107,9 +108,11 @@ export function dialledDid(value) {
 function destinationFor(existing, patch) {
   const keep = realDestination(existing);
   const next = realDestination(patch);
-  if (!keep) return next;
-  if (!next) return keep;
-  return !dialledDid(keep) && dialledDid(next) ? next : keep;
+  if (!keep && !next) return '';
+  const chosen = !keep ? next : !next ? keep : !didDigits(keep) && didDigits(next) ? next : keep;
+  // A number long enough to be a DID is kept in the console's E.164 form, so the
+  // row names the same string `numbers` is keyed on whichever event wrote it.
+  return dialledDid(chosen) || chosen;
 }
 
 /** A caller worth recording: not the switch's placeholder for "anonymous". */

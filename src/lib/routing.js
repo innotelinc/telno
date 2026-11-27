@@ -28,12 +28,17 @@ import { db_, now } from '../db/index.js';
 const digitsOf = (value) => String(value || '').replace(/\D/g, '');
 
 /**
- * Where a DID for this extension goes. `ext:` is a line the edge reaches over
- * Cantus; with an edge configured, the extension is answered by a SIP switch
- * (its softphone and its desk phone both ring), so the rule says `sip:`.
+ * Where a DID goes.
+ *
+ * `ext:` is a line this edge reaches over Cantus. With a SIP switch behind the
+ * edge, the call is placed to that switch instead — addressed by the **number
+ * that was dialled**, not by the line. The switch already holds the DID table
+ * its own dialplan is generated from, so it decides which line rings, and it
+ * sees the number a caller actually dialled. Naming the line here would make the
+ * gateway a second, silent answer to "where does this DID go".
  */
-export const inboundTarget = (extension) =>
-  config.cantus.sipEdge && config.cantus.edgeSecret ? `sip:${extension}` : `ext:${extension}`;
+export const inboundTarget = (did, extension) =>
+  config.cantus.sipEdge && config.cantus.edgeSecret ? `sip:${did}` : `ext:${extension}`;
 
 /** Where an extension may dial out to. A setting, because it is a policy. */
 export const OUTBOUND_KEY = 'routing.outbound';
@@ -108,7 +113,7 @@ export function routingDocument({ generatedAt = now() } = {}) {
     add({
       name: `did-${digits}`,
       when: { to: digits },
-      then: [{ answer: {} }, { forward: { to: inboundTarget(row.extension) } }],
+      then: [{ answer: {} }, { forward: { to: inboundTarget(digits, row.extension) } }],
     });
   }
 

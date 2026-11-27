@@ -37,41 +37,33 @@ switch  ──AMI───◄  Node                       Command: pjsip reload 
 
 ### Inbound calls through the gateway edge
 
-A carrier call does not reach this switch addressed to a DID. The Cantus gateway
-takes the carrier's INVITE, decides the destination from the routing document and
-**dials this switch by extension** — `sip:101` — because `from-internal` is the
-context that can ring a line by number. Everything after that is ordinary Asterisk,
-with one consequence: the CDR's `Destination` is the line that answered, so
-`calls.to_number` would read `101` for a call placed to 413-264-2700.
+A carrier call reaches this switch through the Cantus gateway, which forwards the
+**number that was dialled** — `sip:14132642700` — and nothing else. `[cantus-edge]`
+carries `context=from-trunk`, so the call enters exactly where a carrier's own call
+would: `[from-trunk]` → `[registry]`, which maps the DID to the line that rings.
 
-The dialled number rides in-band to fix exactly that:
+That is deliberate. Naming the line in the routing document instead (`sip:101`) also
+works for audio, but the switch would see extension 101 and never the number: the
+CDR would name the line, `[registry]`'s per-agent inbound recording and
+`fax_mode=auto` would be skipped on the one path that carries real calls, and there
+would be two answers to "where does this DID go" — the routing document and the DID
+table.
 
-1. The gateway stamps `X-Cantus-DID: <dialled number>` on the leg it places here
-   (documented in cantus `docs/stack.md`, "The SIP edge: what a peer INVITE carries").
-2. `[from-internal]` in the generated dialplan reads it once, where the edge's call
-   enters: `Set(__TELNO_DID=${PJSIP_HEADER(read,X-Cantus-DID)})`.
-3. It writes that into `Set(CDR(userfield)=${TELNO_DID})`. `userfield` is the only
-   free-form field Asterisk lets the dialplan set that `cdr_manager` then sends over
-   AMI. `src/telephony/index.js` reads it as `msg.UserField`, and `call-log.js`
-   prefers a DID (ten or more digits) over an extension when both describe one call,
-   in either arrival order.
+What follows from that shape:
 
-What to know before changing any of it:
-
-- **The two halves are one contract.** Drop the `CDR(userfield)` line and nothing
-  fails — `to_number` silently falls back to the extension, and the record stops
-  naming the destination that was dialled. `test/call-log-inbound-did.test.js`
-  guards the generated dialplan and the merge order.
-- **The value is normalised to E.164.** `dialledDid()` accepts 10–15 digits and
-  returns `numbers.e164`'s form (`+14132642700`), using `src/lib/e164.js` — the same
-  rule every other table is keyed on. A carrier sends ten digits and the switch
-  writes eleven, so storing either as-is would put one number in the row under a
-  form nothing else can be joined to. A short value is an extension and yields
-  nothing, so a stray `userfield` cannot invent a DID.
-- **Only answered calls carry it.** `cdr_manager` is configured with `Log unanswered
-  calls: No`, so a missed inbound call is built from the AMI `Hangup` event, which
-  has no CDR, and its `to_number` stays the extension. Changing that means logging
-  unanswered CDRs, which adds a row to every failed call.
+- **Where a DID goes is decided once, by the DID row.** `routing.js` forwards the
+  number; `[registry]` resolves it to a line. Moving a number to another line is
+  still one edit, in one place.
+- **A destination of DID length is stored as E.164** — `call-log.js`'s
+  `dialledDid()`, using `src/lib/e164.js`. The carrier sends ten digits and the
+  request-URI carries eleven; `numbers.e164` is what every other table joins on, so
+  either stored as-is would be a number nothing can be matched to.
+- **A call that is never answered still names the DID**, because the destination
+  arrived on the request rather than from a CDR field that only exists for answered
+  calls.
+- **The edge is not trusted for being on loopback.** `[cantus-edge]` still
+  authenticates (`auth=cantus-edge-auth`); the context decides where a call goes,
+  not whether it is allowed.
 
 ## Data model
 
