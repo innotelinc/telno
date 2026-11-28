@@ -43,6 +43,40 @@ const routeNamed = (doc, name) => doc.routes.find((route) => route.name === name
 const forwardsTo = (route) =>
   (route?.then || []).map((action) => action.forward?.to).filter(Boolean);
 
+// `[registry]` as the switch reads it: extension name (without the leading `_`
+// that makes a pattern) to its actions. Continuation lines carry a label.
+const registryEntries = (conf) => {
+  const section = conf.slice(conf.indexOf('[registry]'), conf.indexOf('[outbound]'));
+  const entries = new Map();
+  let current = null;
+  for (const line of section.split('\n')) {
+    const start = line.match(/^exten => ([^,]+),1,(.*)$/);
+    if (start) {
+      current = start[1].replace(/^_/, '');
+      entries.set(current, [start[2]]);
+      continue;
+    }
+    const cont = line.match(/^ same => n(?:\([^)]*\))?,(.+)$/);
+    if (cont && current) entries.get(current).push(cont[1]);
+  }
+  return entries;
+};
+
+// Follow the registry's own single-argument Goto hops (`Goto(<exten>,1)`), which
+// is how an alias reaches its canonical entry. A Goto that names a context is the
+// end of the chain, not a hop.
+const landOn = (entries, exten) => {
+  const seen = new Set();
+  let at = exten;
+  while (entries.has(at) && !seen.has(at)) {
+    seen.add(at);
+    const hop = entries.get(at).find((action) => /^Goto\([^,]+,\d+\)$/.test(action));
+    if (!hop) return entries.get(at);
+    at = hop.slice('Goto('.length, -1).split(',')[0];
+  }
+  return null;
+};
+
 test('the DID route forwards the number that was dialled, not the line', () => {
   const route = routeNamed(routingDocument(), 'did-14132642700');
 
@@ -73,4 +107,34 @@ test('the edge endpoint enters the dialplan at from-trunk', () => {
   assert.match(edge, /^context=from-trunk$/m);
   // The endpoint still authenticates; the context is not what makes it trusted.
   assert.match(edge, /^auth=cantus-edge-auth$/m);
+});
+
+test('the number the document forwards is the registry entry that dials line 101', () => {
+  const [forwarded] = forwardsTo(routeNamed(routingDocument(), 'did-14132642700'));
+  assert.match(forwarded, /^sip:/);
+  const dialled = forwarded.slice('sip:'.length);
+
+  const entries = registryEntries(generateConfigs()['extensions.conf']);
+
+  // The gateway hands over the validated E.164 with its punctuation removed, and
+  // that is the registry's canonical key: the entry the dialplan rings from. If
+  // the two ever disagree the call still answers — `[registry]`'s `s` fallback
+  // plays "service not available" — so it has to be asserted, not assumed.
+  assert.equal(dialled, '14132642700');
+  assert.ok(entries.has(dialled), `${dialled} is not an extension in [registry]`);
+  assert.ok(
+    landOn(entries, dialled).includes('Goto(internal,101,1)'),
+    `${dialled} does not reach line 101: ${JSON.stringify(landOn(entries, dialled))}`
+  );
+
+  // A carrier may write the same number as ten digits or with a plus. Those are
+  // aliases to the entry above, so every spelling rings the same line and there is
+  // only ever one answer to which line a DID belongs to.
+  for (const alias of ['4132642700', '+14132642700']) {
+    assert.ok(entries.has(alias), `${alias} is not an alias in [registry]`);
+    assert.ok(
+      landOn(entries, alias).includes('Goto(internal,101,1)'),
+      `${alias} does not reach line 101: ${JSON.stringify(landOn(entries, alias))}`
+    );
+  }
 });
